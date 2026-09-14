@@ -33,6 +33,10 @@ local function debugPrint(...)
     end
 end
 
+local function getToughHitSyncRadius()
+    return 80
+end
+
 -- Fast lookup cache for zombies already loaded on the server.
 -- Key: reliable persistentID, Value: IsoZombie reference.
 local ZombieRefByPID = {}
@@ -578,25 +582,29 @@ local function Apocalipse_TSY_OnClientCommand(module, command, player, args)
                 modData.Apocalipse_TSY_ToughnessMaxHits = maxHits
             end
 
-            ZombieHelper.BroadcastToAll("Apocalipse_TSY", "ToughZombieHit", {
+            local syncX = zombie and zombie:getX() or x
+            local syncY = zombie and zombie:getY() or y
+            local payload = {
                 zombieID = zombieID,
                 persistentID = persistentID,
                 hitCounter = stored.toughnessHitCounter,
                 maxHits = maxHits,
-                x = x,
-                y = y,
+                x = syncX,
+                y = syncY,
                 isExhausted = isExhausted
-            })
+            }
+            local sentCount = ZombieHelper.SendToPlayersNear("Apocalipse_TSY", "ToughZombieHit", payload, syncX, syncY,
+                getToughHitSyncRadius())
             if isExhausted then
-                debugPrint("Apocalipse_TSY Server: Broadcast ToughZombieHit exhausted pid=" .. tostring(persistentID) ..
+                debugPrint("Apocalipse_TSY Server: Sent ToughZombieHit exhausted pid=" .. tostring(persistentID) ..
                                " onlineID=" .. tostring(zombieID) .. " (" .. tostring(stored.toughnessHitCounter) .. "/" ..
-                               tostring(maxHits) .. ")")
+                               tostring(maxHits) .. "), recipients=" .. tostring(sentCount))
             end
         else
             -- No stored data - broadcast exhausted so client stops mitigating
             debugPrint("Apocalipse_TSY Server: ZombieHitTough no match for pid=" .. tostring(persistentID) ..
                            " (onlineID=" .. tostring(zombieID) .. ", clientPID=" .. tostring(args.persistentID) .. ")")
-            ZombieHelper.BroadcastToAll("Apocalipse_TSY", "ToughZombieHit", {
+            local payload = {
                 zombieID = zombieID,
                 persistentID = persistentID,
                 hitCounter = RegionManager.Shared.DEFAULT_MAX_HITS,
@@ -604,7 +612,8 @@ local function Apocalipse_TSY_OnClientCommand(module, command, player, args)
                 x = x,
                 y = y,
                 isExhausted = true
-            })
+            }
+            ZombieHelper.SendToPlayersNear("Apocalipse_TSY", "ToughZombieHit", payload, x, y, getToughHitSyncRadius())
         end
         return
     end

@@ -12,7 +12,7 @@ Region management for Project Zomboid Build 42 multiplayer servers. Create zones
 [*] Zone types: PVP, Sprinters, Shamblers, Safe Zone, Loot Bonus, Dead Zone, Custom
 [*] Auto-generated safe zones fill the entire map - no gaps
 [*] Overlapping zones merge smartly
-[*] Edit zones via JSON config file or admin Panel - no code needed
+[*] Edit zones via .txt config file or admin Panel - no code needed
 [*] Admin panel for editing, creating and teleporting to regions
 [*] Players can see the regions through the admin panel but they can't edit or create regions
 [/list]
@@ -92,6 +92,13 @@ All configurable under the [b]Apocalipse_TSY[/b] sandbox page:
 [*] Horde alert toggle and radius
 [*] Cluster anti-spam settings
 [*] Debug mode
+[/list]
+
+[hr][/hr]
+
+[h2]Changelog[/h2]
+[list]
+[*] Optimized tough zombie armor hit sync in multiplayer: armor/toughness hit updates are now sent only to players near the zombie being hit instead of every online player.
 [/list]
 
 [hr][/hr]

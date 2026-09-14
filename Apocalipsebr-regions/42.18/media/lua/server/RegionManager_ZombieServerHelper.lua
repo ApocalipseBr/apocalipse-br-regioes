@@ -396,6 +396,41 @@ function ZombieHelper.BroadcastToAll(module, command, payload)
     end
 end
 
+--- Send a server command only to players near a world position.
+---@param module string   Module name (e.g. "Apocalipse_TSY")
+---@param command string  Command name
+---@param payload table   Data table
+---@param x number        World X coordinate
+---@param y number        World Y coordinate
+---@param radius number   Max distance in tiles
+---@return number sentCount
+function ZombieHelper.SendToPlayersNear(module, command, payload, x, y, radius)
+    local players = getOnlinePlayers()
+    if not players then return 0 end
+
+    x = tonumber(x)
+    y = tonumber(y)
+    radius = tonumber(radius) or 0
+    if not x or not y or radius <= 0 then
+        return 0
+    end
+
+    local radiusSq = radius * radius
+    local sentCount = 0
+    for i = 0, players:size() - 1 do
+        local p = players:get(i)
+        if p then
+            local dx = p:getX() - x
+            local dy = p:getY() - y
+            if dx * dx + dy * dy <= radiusSq then
+                sendServerCommand(p, module, command, payload)
+                sentCount = sentCount + 1
+            end
+        end
+    end
+    return sentCount
+end
+
 -- ============================================================================
 -- Find zombie in the current cell by online ID
 -- ============================================================================
