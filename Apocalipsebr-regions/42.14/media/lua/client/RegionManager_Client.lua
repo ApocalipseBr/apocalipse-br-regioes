@@ -17,6 +17,56 @@ local function log(msg)
     RegionManager.Log("Client", msg)
 end
 
+local function syncNativeNonPvpZonesFromPayload(zones)
+    if not NonPvpZone or not NonPvpZone.getAllZones then
+        log("Native NonPvpZone API unavailable on client")
+        return
+    end
+
+    local allNonPvp = NonPvpZone.getAllZones()
+    if not allNonPvp then return end
+
+    local removed = 0
+    local toRemove = {}
+    for i = 0, allNonPvp:size() - 1 do
+        local zone = allNonPvp:get(i)
+        local title = zone and zone:getTitle()
+        if title and string.find(title, "^SafeZone_") then
+            toRemove[#toRemove + 1] = zone
+        end
+    end
+
+    for _, zone in ipairs(toRemove) do
+        local ok, err = pcall(function()
+            allNonPvp:remove(zone)
+        end)
+        if ok then
+            removed = removed + 1
+        else
+            log("Could not remove local NonPvpZone " .. tostring(zone:getTitle()) .. ": " .. tostring(err))
+        end
+    end
+
+    local added = 0
+    for _, zone in ipairs(zones or {}) do
+        if zone.pvpEnabled == false and zone.bounds then
+            local b = zone.bounds
+            local title = "SafeZone_" .. tostring(zone.id)
+            local ok, err = pcall(function()
+                local nativeZone = NonPvpZone.new(title, b.minX, b.minY, b.maxX + 1, b.maxY + 1)
+                allNonPvp:add(nativeZone)
+            end)
+            if ok then
+                added = added + 1
+            else
+                log("Could not create local NonPvpZone " .. title .. ": " .. tostring(err))
+            end
+        end
+    end
+
+    log("Synced local NonPvpZones from RegionManager payload: removed=" .. removed .. ", added=" .. added)
+end
+
 -- Show zone notification
 ---@param zoneName string
 ---@param message string
@@ -65,6 +115,7 @@ local function OnServerCommand(module, command, args)
     elseif command == "AllZoneBoundaries" then
         -- Receive all zone boundary data from server
         RegionManager.Client.zoneData = args.zones or {}
+        syncNativeNonPvpZonesFromPayload(args.zones)
         log("Received " .. tostring(#RegionManager.Client.zoneData) .. " zone boundaries from server")
         log("Zone outlines will be drawn continuously via OnPostRender")
 

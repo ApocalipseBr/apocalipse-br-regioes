@@ -1,0 +1,176 @@
+name: Build, validate and publish regions
+
+on:
+  workflow_call:
+    inputs:
+      workshop-id:
+        required: true
+        type: string
+      radio-ref:
+        description: Shared publishing tools revision to test and use.
+        default: master
+        type: string
+      steam-secrets-organization:
+        description: Organization holding STEAM_CONFIG_VDF.
+        default: ApocalipseBr
+        type: string
+    secrets:
+      STEAM_USERNAME:
+        required: false
+      STEAM_PASSWORD:
+        required: false
+      STEAM_CONFIG_VDF:
+        required: false
+      STEAM_SESSION_GITHUB_TOKEN:
+        required: false
+      PZMANAGER_RESTART_URL:
+        required: false
+      PZMANAGER_MOD_UPDATE_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Tests, build and package integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      tools-sha: ${{ steps.tools.outputs.sha }}
+    steps:
+      - name: Check out mod source
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+          persist-credentials: false
+      # A separate checkout makes this workflow reusable from another mod repository.
+      - name: Check out publishing tools
+        uses: actions/checkout@v4
+        with:
+          repository: ApocalipseBr/ApocalipseBRRadio
+          ref: ${{ inputs.radio-ref }}
+          path: .workshop-tools
+          persist-credentials: false
+      - name: Record tested framework and publishing tools commit
+        id: tools
+        run: echo "sha=$(git -C .workshop-tools rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked test and build dependencies
+        run: |
+          npm ci
+      - name: Configure isolated build output
+        run: echo "PZ_BUILD_ROOT=$RUNNER_TEMP/pzstudio-output" >> "$GITHUB_ENV"
+      - name: Test region options and Lua behavior
+        run: npm test
+      - name: Compile the Workshop package with PZ Studio
+        run: npm run build
+      - name: Validate compiled assets and packaged region behavior
+        run: npm run test:build
+      - name: Stage the tested build for Steam
+        env:
+          WORKSHOP_ID: ${{ inputs.workshop-id }}
+        run: |
+          set -euo pipefail
+          workshop_dir="$(python3 .workshop-tools/scripts/workshop/stage.py output "$PZ_BUILD_ROOT" project.json)"
+          python3 .workshop-tools/scripts/workshop/stage.py stage "$workshop_dir" "$RUNNER_TEMP/workshop-package" "$WORKSHOP_ID"
+      - name: Check packaging and publisher behavior without Steam access
+        run: python3 -m unittest discover -s .workshop-tools/tests -p 'workshop*_spec.py'
+      - name: Validate publisher container build
+        run: docker build -t pz-workshop-publisher .workshop-tools/docker/workshop
+      - name: Save Workshop package
+        uses: actions/upload-artifact@v4
+        with:
+          name: workshop-package
+          path: ${{ runner.temp }}/workshop-package
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    needs: package
+    # Never run untrusted PR code on a publisher or expose Steam credentials to it.
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, Linux, X64, pz-workshop]
+    timeout-minutes: 30
+    env:
+      WORKSHOP_CONTAINER: pz-workshop-${{ github.run_id }}-${{ github.run_attempt }}
+    concurrency:
+      group: steam-workshop-account
+      cancel-in-progress: false
+    steps:
+      - name: Check home runner prerequisites
+        run: |
+          set -euo pipefail
+          command -v python3 >/dev/null || { echo "::error::Install python3 on the home runner."; exit 1; }
+          command -v gh >/dev/null || { echo "::error::Install GitHub CLI (gh) on the home runner."; exit 1; }
+          command -v docker >/dev/null || { echo "::error::Install Docker on the home runner."; exit 1; }
+          python3 -c 'import fcntl' || { echo "::error::The publishing worker requires Linux file locking."; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "::error::Start Docker and grant the runner user access to its daemon."; exit 1; }
+      - name: Check out publishing tools
+        uses: actions/checkout@v4
+        with:
+          repository: ApocalipseBr/ApocalipseBRRadio
+          ref: ${{ needs.package.outputs.tools-sha }}
+          path: .workshop-tools
+          persist-credentials: false
+      - name: Restore Workshop package
+        uses: actions/download-artifact@v4
+        with:
+          name: workshop-package
+          path: ${{ runner.temp }}/workshop-package
+      - name: Validate restart integration configuration
+        env:
+          PZMANAGER_RESTART_URL: ${{ secrets.PZMANAGER_RESTART_URL }}
+          PZMANAGER_MOD_UPDATE_TOKEN: ${{ secrets.PZMANAGER_MOD_UPDATE_TOKEN }}
+        run: python3 .workshop-tools/scripts/workshop/request_restart.py --validate-only
+      - name: Validate remembered Steam login and secret writer
+        env:
+          STEAM_CONFIG_VDF: ${{ secrets.STEAM_CONFIG_VDF }}
+          GH_TOKEN: ${{ secrets.STEAM_SESSION_GITHUB_TOKEN }}
+          STEAM_SECRETS_ORGANIZATION: ${{ inputs.steam-secrets-organization }}
+        run: python3 .workshop-tools/scripts/workshop/steam_session.py --validate-only
+      - name: Publish existing Workshop item
+        id: steam
+        env:
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
+          STEAM_CONFIG_VDF: ${{ secrets.STEAM_CONFIG_VDF }}
+          WORKSHOP_ID: ${{ inputs.workshop-id }}
+          SOURCE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.STEAM_SESSION_GITHUB_TOKEN }}
+          STEAM_SECRETS_ORGANIZATION: ${{ inputs.steam-secrets-organization }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$STEAM_USERNAME" || -z "$STEAM_CONFIG_VDF" ]]; then
+            echo "::error::Grant this repository access to STEAM_USERNAME and STEAM_CONFIG_VDF."
+            exit 1
+          fi
+          docker build -t pz-workshop-publisher .workshop-tools/docker/workshop
+          python3 .workshop-tools/scripts/workshop/run_publisher.py
+      - name: Request server restart after confirmed or unconfirmed Steam upload
+        if: always() && !cancelled() && (steps.steam.outputs.publication == 'confirmed' || steps.steam.outputs.publication == 'unconfirmed')
+        env:
+          PZMANAGER_RESTART_URL: ${{ secrets.PZMANAGER_RESTART_URL }}
+          PZMANAGER_MOD_UPDATE_TOKEN: ${{ secrets.PZMANAGER_MOD_UPDATE_TOKEN }}
+          PUBLICATION_STATUS: ${{ steps.steam.outputs.publication }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLICATION_STATUS" == 'unconfirmed' ]]; then
+            echo "Upload confirmation unavailable; regions workflow will request a restart despite the shared publisher's skip message."
+          fi
+          python3 .workshop-tools/scripts/workshop/request_restart.py
+          echo "Server restart requested for $PUBLICATION_STATUS Workshop publication." >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove session data and staged files
+        if: always()
+        run: |
+          docker rm -f "$WORKSHOP_CONTAINER" >/dev/null 2>&1 || true
+          rm -rf -- "$RUNNER_TEMP/steam-session" "$RUNNER_TEMP/workshop-package"

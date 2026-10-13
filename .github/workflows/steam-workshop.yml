@@ -1,0 +1,30 @@
+name: Regions CI and Steam Workshop
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Supersede the entire older build/publish flow, including jobs awaiting a worker.
+concurrency:
+  group: ${{ github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'regions-master-publish' || format('regions-ci-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  workshop:
+    uses: ./.github/workflows/publish-workshop.yml
+    with:
+      workshop-id: '3706462687'
+      # Same tested publishing tools revision as Music Uploads.
+      radio-ref: '4d0ac709396101ea078f05aee7afc7f567277458'
+    secrets:
+      STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+      STEAM_PASSWORD: ${{ secrets.STEAM_PASSWORD }}
+      STEAM_CONFIG_VDF: ${{ secrets.STEAM_CONFIG_VDF }}
+      STEAM_SESSION_GITHUB_TOKEN: ${{ secrets.STEAM_SESSION_GITHUB_TOKEN }}
+      PZMANAGER_RESTART_URL: ${{ secrets.PZMANAGER_RESTART_URL }}
+      PZMANAGER_MOD_UPDATE_TOKEN: ${{ secrets.PZMANAGER_MOD_UPDATE_TOKEN }}

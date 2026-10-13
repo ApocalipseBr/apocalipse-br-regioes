@@ -190,6 +190,11 @@ end
 ---@param configuredRegions RegionDefinition[]
 ---@return RegionDefinition[] autoRegions Auto-generated safe zone regions
 function RegionManager.AutoSafeZones.generateSafeZones(configuredRegions)
+    local options = SandboxVars and SandboxVars.RegionManager
+    if not options or options.AutomaticSafeZones ~= true then
+        return {}
+    end
+
     log("=== Starting Automatic Safe Zone Generation ===")
     log("Base map: (" .. BASE_MAP.x1 .. "," .. BASE_MAP.y1 .. ") to (" .. BASE_MAP.x2 .. "," .. BASE_MAP.y2 .. ")")
     

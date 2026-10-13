@@ -241,3 +241,19 @@ option RegionManager.PendingConfirmSweepEveryEpochs
     page = RegionManager,
     translation = RegionManager_PendingConfirmSweepEveryEpochs,
 }
+
+option RegionManager.AutomaticSafeZones
+{
+    type = boolean,
+    default = false,
+    page = RegionManager,
+    translation = RegionManager_AutomaticSafeZones,
+}
+
+option RegionManager.EnforcePVP
+{
+    type = boolean,
+    default = true,
+    page = RegionManager,
+    translation = RegionManager_EnforcePVP,
+}

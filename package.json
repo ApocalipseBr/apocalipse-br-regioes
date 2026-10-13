@@ -1,8 +1,15 @@
 {
-    "scripts": {
-        "clean": "pzstudio clean",
-        "build": "pzstudio clean && pzstudio build",
-        "watch": "pzstudio clean && pzstudio build && pzstudio watch",
-        "update": "pzstudio update"
-    }
+  "private": true,
+  "scripts": {
+    "clean": "node tools/build.mjs --clean",
+    "build": "node tools/build.mjs",
+    "test": "node tests/regions_spec.cjs",
+    "test:build": "node tools/validate-build.mjs",
+    "update": "pzstudio update"
+  },
+  "devDependencies": {
+    "fengari": "0.1.5",
+    "pzstudio": "2.2.0",
+    "yaml": "2.8.1"
+  }
 }

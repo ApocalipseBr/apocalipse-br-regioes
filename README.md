@@ -23,8 +23,8 @@ Custom region management for Project Zomboid multiplayer servers. Divides the ga
   - [4. Client-Side Tick Dispatcher](#4-client-side-tick-dispatcher)
   - [5. PVP System](#5-pvp-system)
     - [5.1 Safety Toggle Flow](#51-safety-toggle-flow)
-    - [5.2 Abuse Detection](#52-abuse-detection)
-    - [5.3 Server Broadcast](#53-server-broadcast)
+    - [5.2 Native Safe-Zone Protection](#52-native-safe-zone-protection)
+    - [5.3 Synchronization](#53-synchronization)
   - [6. Zombie Property System](#6-zombie-property-system)
     - [6.1 Spawn Hook Pattern (OnZombieCreate → ConfirmZombie)](#61-spawn-hook-pattern-onzombiecreate--confirmzombie)
     - [6.2 Server-Side Decision Pipeline](#62-server-side-decision-pipeline)
@@ -55,7 +55,7 @@ Custom region management for Project Zomboid multiplayer servers. Divides the ga
 ```
 apocalipse-br-regioes/           ← pzstudio project root
 ├── project.json                 ← pzstudio config (workshop metadata)
-├── package.json                 ← npm scripts (clean, build, watch, update)
+├── package.json                 ← npm scripts (clean, build, test, test:build, update)
 ├── Apocalipsebr-regions/
 │   ├── common/                  ← Mandatory common folder (loads first)
 │   │   └── media/
@@ -132,19 +132,19 @@ The resulting flat `ZoneProperties` table is stored in `RegisteredZoneData.prope
 
 ### 2.3 Auto-Safe Zone Generation
 
-The `RegionManager_AutoSafeZones` module ensures **the entire playable map** is covered by zones. On server startup:
+The `RegionManager_AutoSafeZones` module optionally covers the configured map bounds with non-PvP zones. Enable `RegionManager.AutomaticSafeZones` to activate this behavior; it is **disabled by default**. On server startup with coverage enabled:
 
-1. Start with the full map rectangle (`-1780,-2272` → `20455,16541`) as a single safe zone
+1. Start with the fixed map rectangle: `(-1780,-2272)-(20455,16541)` for 42.14, or `(-1780,-2272)-(21143,18513)` for 42.18
 2. Identify all PVP-enabled regions from the config
 3. **Subtract** every PVP rectangle from the safe zone using a rectangle subtraction algorithm, producing up to 4 fragments per subtraction
 4. **Merge** adjacent fragments back together (only if the merged result doesn't overlap any PVP zone)
 5. Output auto-generated `AUTOSAFE` regions that are combined with the config-defined regions
 
-This guarantees that players are **always inside either a PVP zone or a safe zone** - there are no "neutral" gaps.
+When enabled, the covered map bounds contain either a PvP region or an automatic non-PvP region. When disabled, only configured regions are registered, so neutral areas retain vanilla rules. Manually configured safe zones remain protected in either mode. Restart the server after changing coverage; registration removes old generated zones before rebuilding.
 
 ### 2.4 External JSON Region File
 
-Regions are persisted to `RegionManager_Regions.json` in the Zomboid directory via the game's `getFileWriter/getFileReader` API. On first boot the file is created from `RegionManager.Config.Regions`. On subsequent boots the file is loaded instead, allowing external tools or admin APIs to modify regions without touching Lua source code.
+Regions are persisted to `RegionManager_Regions.txt` in the Zomboid directory via the game's `getFileWriter/getFileReader` API. On first boot the file is created from `RegionManager.Config.Regions`. On subsequent boots the file is loaded instead, allowing external tools or admin APIs to modify regions without touching Lua source code.
 
 Format:
 ```json
@@ -217,30 +217,19 @@ On player spawn (`OnCreatePlayer`), zone state is cleared and boundaries are re-
 
 ### 5.1 Safety Toggle Flow
 
-**File:** `RegionManager_PVP.lua` (client) → `RegionManager_PVP_Server.lua` (server)
+**File:** `RegionManager_PVP.lua` (client).
 
-PVP is controlled through PZ's built-in **Safety** system. The flow:
+`RegionManager.EnforcePVP` defaults to **true**, retaining automatic PvP enforcement. The client tick handler checks all current regions and requests vanilla safety off inside PvP regions, clearing the safety cooldown when no toggle is pending. Explicit safe regions take precedence over overlapping PvP regions; neutral regions do not impose a safety state. Leaving all PvP regions releases enforcement.
 
-1. Player enters a PVP zone → `onZoneEntered` fires
-2. Client sets `player:getSafety():toggleSafety()` to disable safety (PVP on)
-3. Client stores `RequiredSafetyState[playerNum] = false`
-4. Client sends `UpdatePvpState` command to server
-5. Server broadcasts `PvpStateChanged` to all other clients
+With `EnforcePVP=false`, the mod does not toggle safety or reset its timers. Players control their own safety through vanilla `SafetyToggleTimer` and `SafetyCooldownTimer` settings, including when entering or leaving PvP regions.
 
-When entering a safe zone (auto-generated or configured), safety is left enabled (since version 42.13.2+ the engine handles safe zones correctly).
+### 5.2 Native Safe-Zone Protection
 
-The `onTick` handler continuously enforces the required state - if a player manually toggles safety back, it is immediately reverted.
+Configured safe regions and optional automatic safe regions register native `NonPvpZone` rectangles on the server. Boundary payloads synchronize these rectangles on clients. This protection works independently of the enforcement option; disabling enforcement does not permit damage inside native non-PvP zones.
 
-### 5.2 Abuse Detection
+### 5.3 Synchronization
 
-Players who rapidly toggle safety (>5 times within 10 seconds) are **flagged**:
-- Their safety state is forcibly locked for 500 ticks
-- Safety cooldown is set to the remaining punishment ticks
-- After punishment expires, flags are cleared
-
-### 5.3 Server Broadcast
-
-The server (`RegionManager_PVP_Server.lua`) receives `UpdatePvpState` from the source client and relays a `PvpStateChanged` command to all other connected players, enabling skull icon synchronization.
+Safety changes use vanilla `Safety:toggleSafety()` and its native networking. The PvP module no longer tracks or punishes toggle attempts. The legacy `RegionManager_PVP_Server.lua` custom broadcast handler remains in the version trees; its 42.18 broadcast code is commented out.
 
 ---
 
@@ -590,7 +579,14 @@ Each sprint variant uses `x_extends="defaultLunge.xml"` or `x_extends` on the ba
 
 ## 10. Sandbox Options
 
-All under page `Apocalipse_TSY`:
+Region controls under page `RegionManager`:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `AutomaticSafeZones` | boolean | false | Cover fixed map bounds outside PvP regions with automatic non-PvP zones; requires server restart |
+| `EnforcePVP` | boolean | true | Automatically request safety off in PvP regions; false preserves vanilla player toggles and timers |
+
+Sprinter scream options under page `Apocalipse_TSY`:
 
 | Option | Type | Default | Range | Description |
 |---|---|---|---|---|
@@ -634,7 +630,7 @@ Additional options exist for cluster radius, cluster cooldown, max cluster screa
 |---|---|
 | `RegionManager_Client.lua` | Zone data storage, notification display, server command handler |
 | `RegionManager_ClientTick.lua` | Central tick dispatcher, zone enter/exit detection |
-| `RegionManager_PVP.lua` | Safety state enforcement, abuse detection |
+| `RegionManager_PVP.lua` | Optional safety state enforcement from current regions |
 | `RegionManager_ZombieClient.lua` | Spawn hook, pending queue, payload decode, SpeedTracker |
 | `RegionManager_ZombieModuleClient.lua` | Boss zombie sound/behavior engine |
 | `RegionManager_AdminPanel.lua` | Admin UI for region list and teleportation |
@@ -648,3 +644,9 @@ Additional options exist for cluster radius, cluster cooldown, max cluster screa
 | `scripts/Apocalipse_TSY_Sounds.txt` | Sound definitions for 62 scream voice slots |
 | `AnimSets/zombie/` | Custom sprinter animation trigger sets |
 | `sound/` | ABMIS_01..62.mp3 voice files |
+
+## Development and Workshop publishing
+
+See [AGENTS.md](AGENTS.md) for the architecture map and contributor workflow. Run `npm ci`, `npm test`, `npm run build`, and `npm run test:build`. Builds go to `build/ApocalipseBR Regioes` (or `PZ_BUILD_ROOT`), preserve game mod ID `ApocalipseBR_Regioes`, and validate the actual packaged Lua and assets.
+
+The GitHub Actions flow matches Music Uploads: PRs validate/build an artifact; master pushes or manual runs publish Workshop item `3706462687` through the shared Radio publisher on the `pz-workshop` self-hosted runner. Confirmed or unconfirmed uploads request a server restart. The repository needs access to the shared Steam session and PZManager secrets described in `AGENTS.md`.

@@ -53,7 +53,7 @@ local function buildZoneBoundariesPayload()
                 g = 255,
                 b = 0
             },
-            pvpEnabled = data.properties.pvpEnabled or false,
+            pvpEnabled = data.properties.pvpEnabled,
             sprinterChance = data.properties.sprinterChance or 0,
             shamblerChance = data.properties.shamblerChance or 0,
             hawkVisionChance = data.properties.hawkVisionChance or 0,
@@ -183,13 +183,18 @@ local function registerRegion(region)
         -- Invalidate cached client payload: contents changed.
         RegionManager.Server._cachedBoundariesPayload = nil
 
-        -- Create NonPvpZone for safe zones (pvpEnabled = false)
-        -- SafetySystemManager automatically detects NonPvpZone and manages Safety state
-        -- if props.pvpEnabled == false then
-        --     local zoneName = "SafeZone_" .. region.id
-        --     NonPvpZone.addNonPvpZone(zoneName, minX, minY, maxX, maxY)
-        --     log("Created NonPvpZone: " .. zoneName .. " - SafetySystemManager will auto-manage this zone")
-        -- end
+        -- Create NonPvpZone for safe zones (pvpEnabled = false).
+        -- Native protection is independent of optional client safety enforcement.
+        if props.pvpEnabled == false then
+            local zoneName = "SafeZone_" .. region.id
+            -- NonPvpZone uses exclusive x2/y2 checks; RegionManager bounds are inclusive.
+            local ok, err = pcall(NonPvpZone.addNonPvpZone, zoneName, minX, minY, maxX + 1, maxY + 1)
+            if ok then
+                log("Created NonPvpZone: " .. zoneName .. " - native PvP packets will be blocked in this zone")
+            else
+                log("Could not create NonPvpZone " .. zoneName .. ": " .. tostring(err))
+            end
+        end
 
         return true
     else

@@ -53,7 +53,7 @@ local function buildZoneBoundariesPayload()
                 g = 255,
                 b = 0
             },
-            pvpEnabled = data.properties.pvpEnabled or false,
+            pvpEnabled = data.properties.pvpEnabled,
             sprinterChance = data.properties.sprinterChance or 0,
             shamblerChance = data.properties.shamblerChance or 0,
             hawkVisionChance = data.properties.hawkVisionChance or 0,
