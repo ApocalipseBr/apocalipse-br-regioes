@@ -8,6 +8,7 @@ end
 
 require "RegionManager_Config"
 require "RegionManager_AutoSafeZones"
+require "RegionManager_ZombieTraits"
 
 local JSON = require "RegionManager_JSON"
 
@@ -44,6 +45,10 @@ end
 local function buildZoneBoundariesPayload()
     local zoneList = {}
     for _, data in pairs(RegionManager.Server.registeredZones or {}) do
+        local zombieTraits = {}
+        for _, key in ipairs(RegionManager.ZombieTraits.Keys) do
+            zombieTraits[key] = data.properties[key]
+        end
         table.insert(zoneList, {
             id = data.region.id,
             name = data.region.name,
@@ -54,6 +59,7 @@ local function buildZoneBoundariesPayload()
                 b = 0
             },
             pvpEnabled = data.properties.pvpEnabled,
+            zombieTraits = zombieTraits,
             sprinterChance = data.properties.sprinterChance or 0,
             shamblerChance = data.properties.shamblerChance or 0,
             hawkVisionChance = data.properties.hawkVisionChance or 0,

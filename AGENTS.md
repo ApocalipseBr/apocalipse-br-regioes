@@ -58,6 +58,21 @@ existing game mod ID is `ApocalipseBR_Regioes`. Preserve both identifiers.
   `RegionManager_ZombieShared.lua`, server zombie helpers, and client zombie
   modules. Preserve persistent IDs, decision caches, and server validation.
   `Apocalipse_TSY_*` handles sprinter screams and its own sandbox namespace.
+- Latest-version `RegionManager_ZombieTraits.lua` provides deterministic
+  cognition/sight/hearing profiles from normalized persistent outfit IDs.
+  `RegionManager_ZombieTraitsClient.lua` queues OnZombieCreate objects and
+  processes one of seven stages per tick, round-robin. Trait rules travel in
+  the existing AllZoneBoundaries payload, not per-zombie commands. Completed
+  profiles use zombie-local ModData plus a bounded 4096-identity cache; rule
+  changes invalidate cached profiles and ownership acquisition queues repair.
+  The Lua-only prototype saves/restores sandbox options around DoZombieStats,
+  forces door-opening percentage to 0/100, and restores exposed movement
+  values. Internal animation/RNG and other stats-initializer effects remain.
+  Memory/strength and other zombie traits have no new selection logic here.
+  Each queued stage and the applier reject unloaded/detached zombies using
+  moving-object membership and live-cell square lookup. Online-ID changes
+  invalidate queued incarnations without changing the persistent trait hash.
+  Discarded jobs release references; loaded objects can start fresh work.
 - `docs/zombie-traits-research.md` records the deterministic trait exploration:
   online-ID lifetime, simulation ownership, sandbox initialization limitations,
   and an application strategy without per-zombie decision commands. Read it

@@ -76,6 +76,8 @@ for (const version of ['42.14', '42.18']) {
 
     const config = fs.readFileSync(path.join(media, 'lua/shared/RegionManager_Config.lua'), 'utf8');
     const server = fs.readFileSync(path.join(media, 'lua/server/RegionManager_Server.lua'), 'utf8');
+    const traitsFile = path.join(media, 'lua/shared/RegionManager_ZombieTraits.lua');
+    const traits = fs.existsSync(traitsFile) ? fs.readFileSync(traitsFile, 'utf8') : '';
     run(`
         isServer = function() return true end
         local function loadConfig() ${config} end
@@ -83,13 +85,15 @@ for (const version of ['42.14', '42.18']) {
         local function loadAuto() ${auto} end
         loadAuto()
         RegionManager.Config.Regions = {
-            {id='pvp',name='PvP',enabled=true,categories={'PVP'},x1=10,y1=10,x2=20,y2=20,z=0},
+            {id='pvp',name='PvP',enabled=true,categories={'PVP'},x1=10,y1=10,x2=20,y2=20,z=0,customProperties={navigationChance=42,normalVisionChance=20}},
             {id='manual',name='Safe',enabled=true,categories={'SAFEZONE'},x1=40,y1=40,x2=45,y2=45,z=0},
             {id='neutral',name='Zombies',enabled=true,categories={'SPRINTERS'},x1=60,y1=60,x2=65,y2=65,z=0}
         }
         require = function(name)
             if name=='RegionManager_JSON' then return {encode=function() return '{}' end} end
         end
+        local function loadTraits() ${traits} end
+        loadTraits()
         getFileReader = function() return nil end
         getFileWriter = function() return {write=function() end,close=function() end} end
         local world={registerZone=function() return {} end,checkVehiclesZones=function() end}
@@ -134,6 +138,9 @@ for (const version of ['42.14', '42.18']) {
             if zone.id=='neutral' then assert(zone.pvpEnabled==nil) end
             if zone.id=='manual' then assert(zone.pvpEnabled==false) end
             if zone.id=='pvp' then assert(zone.pvpEnabled==true) end
+            if zone.id=='pvp' and RegionManager.ZombieTraits then
+                assert(zone.zombieTraits.navigationChance==42 and zone.zombieTraits.normalVisionChance==20)
+            end
         end
     `, `${version} server registration and coverage cleanup`);
 
@@ -185,10 +192,194 @@ for (const version of ['42.14', '42.18']) {
     `, `${version} PvP enforcement`);
 }
 
+const traitsSource = fs.readFileSync(path.join(mod, '42.18/media/lua/shared/RegionManager_ZombieTraits.lua'), 'utf8');
+const traitsClient = fs.readFileSync(path.join(mod, '42.18/media/lua/client/RegionManager_ZombieTraitsClient.lua'), 'utf8');
+run(`
+    require=function() end
+    isServer=function() return false end
+    RegionManager={Log=function() end,Client={zoneData={
+        {bounds={minX=0,minY=0,maxX=1000,maxY=1000},zombieTraits={navigationChance=100,hawkVisionChance=100,poorHearingChance=100}}
+    }}}
+    Events={}
+    for _,name in ipairs({'OnGameStart','OnZombieCreate','OnZombieUpdate','OnTick','OnServerCommand'}) do
+        Events[name]={Add=function() end}
+    end
+    local function loadTraits() ${traitsSource} end
+    loadTraits()
+    local Traits=RegionManager.ZombieTraits
+    local defaults={cognition=3,doorOpening=10,sight=2,hearing=2}
+    local roll=Traits.roll('identity','cognition')
+    assert(roll>=0 and roll<100 and roll==Traits.roll('identity','cognition'))
+    assert(not Traits.cognition('identity',{navigationChance=0},defaults))
+    assert(Traits.cognition('identity',{navigationChance=100},defaults))
+    assert(Traits.sense('identity','sight',{hawkVisionChance=100},defaults)==1)
+    assert(Traits.sense('identity','hearing',{badHearingChance=100},defaults)==3)
+    assert(Traits.sense('identity','sight',{randomVisionChance=100},defaults)==Traits.sense('identity','sight',{randomVisionChance=100},defaults))
+    local chances,active=Traits.aggregate({
+        {bounds={minX=0,minY=0,maxX=20,maxY=20},zombieTraits={navigationChance=20}},
+        {bounds={minX=0,minY=0,maxX=20,maxY=20},zombieTraits={navigationChance=80}},
+        {enabled=false,bounds={minX=0,minY=0,maxX=20,maxY=20},zombieTraits={navigationChance=100}}
+    },10,10)
+    assert(active and chances.navigationChance==80)
+    local _,outside=Traits.aggregate(RegionManager.Client.zoneData,2000,2000)
+    assert(not outside)
+    local settings={Cognition=3,DoorOpeningPercentage=25,Sight=2,Hearing=2}
+    local config={}
+    for key in pairs(settings) do
+        local name=key
+        config[name]={getValue=function() return settings[name] end,setValue=function(_,value) settings[name]=value end}
+        config[name].asConfigOption=function() return config[name] end
+    end
+    getSandboxOptions=function() return {getOptionByName=function(_,key) return config[key:match('%.(.+)$')] end} end
+    local function loadClient() ${traitsClient} end
+    loadClient()
+    local Client=RegionManager.ZombieTraitsClient
+    local calls,frameCalls=0,0
+    local square={getX=function() return 10 end,getY=function() return 10 end,getZ=function() return 0 end}
+    local staleSquare={getX=function() return 10 end,getY=function() return 10 end,getZ=function() return 0 end}
+    getCell=function() return {getGridSquare=function() return square end} end
+    local function zombie(outfit)
+        local z={outfit=outfit,onlineId=outfit % 30000,md={},walk='sprint2',speed=0.93,under=true,remote=true,x=10,y=10}
+        function z:getModData() return self.md end
+        function z:getPersistentOutfitID() return self.outfit end
+        function z:isFemale() return false end
+        function z:isDead() return self.dead or false end
+        function z:getCurrentSquare() if self.unloaded then return nil end; return self.stale and staleSquare or square end
+        function z:getMovingObjectIndex() return self.detached and -1 or 0 end
+        function z:getOnlineID() return self.onlineId end
+        function z:getX() return self.x end
+        function z:getY() return self.y end
+        function z:getWalkType() return self.walk end
+        function z:getSpeedMod() return self.speed end
+        function z:isCanCrawlUnderVehicle() return self.under end
+        function z:isRemoteZombie() return self.remote end
+        function z:setWalkType(value) self.walk=value end
+        function z:setSpeedTypeFromWalkType() end
+        function z:setSpeedMod(value) self.speed=value end
+        function z:setCanCrawlUnderVehicle(value) self.under=value end
+        function z:DoZombieStats()
+            frameCalls=frameCalls+1; calls=calls+1
+            assert(settings.Cognition==4 and settings.DoorOpeningPercentage==100)
+            assert(settings.Sight==1 and settings.Hearing==3)
+            self.walk='slow1'; self.speed=0.4; self.under=false
+            if self.fail then error('injected failure') end
+            self.cognition=1; self.sight=settings.Sight; self.hearing=settings.Hearing
+        end
+        return z
+    end
+    local z=zombie(65537)
+    local identity=Traits.identity(z)
+    z.outfit=65537+32768
+    assert(Traits.identity(z)==identity) -- Hat loss must not reroll.
+    z.md.Apocalipse_TSY_AssignedPID='65537_0'
+    assert(Traits.identity(z)==identity)
+    local unknown=zombie(0)
+    assert(Traits.identity(unknown)==nil)
+    local group={}
+    for i=1,100 do
+        group[i]=zombie(65536+i)
+        Client.enqueue(group[i],true)
+        Client.enqueue(group[i]) -- Duplicate callbacks don't duplicate jobs.
+    end
+    for i=1,700 do
+        frameCalls=0
+        Client.tick()
+        assert(frameCalls<=1,'application burst')
+        assert(settings.Cognition==3 and settings.DoorOpeningPercentage==25 and settings.Sight==2 and settings.Hearing==2,'sandbox leaked across ticks')
+    end
+    assert(calls==100,'100 jobs must complete in 700 ticks')
+    for _,item in ipairs(group) do
+        assert(item.walk=='sprint2' and item.speed==0.93 and item.under)
+        assert(item.md.Apocalipse_TSY_ClientTraits.identity==Traits.identity(item))
+    end
+    local reloaded=zombie(group[1].outfit)
+    assert(Traits.roll(Traits.identity(reloaded),'sight')==Traits.roll(Traits.identity(group[1]),'sight'))
+    reloaded.x=2000 -- Preserve cached profile after unload even when it moved.
+    Client.enqueue(reloaded,true)
+    for i=1,7 do Client.tick() end
+    assert(reloaded.md.Apocalipse_TSY_ClientTraits.doors)
+    local buckets={}
+    for i=1,1000 do buckets[Traits.roll(tostring(i),'sight')]=true end
+    local count=0; for _ in pairs(buckets) do count=count+1 end
+    assert(count==100,'identity hashing must reach all percentiles')
+    local previous=calls
+    Client.update(group[1]); group[1].remote=false; Client.update(group[1])
+    for i=1,7 do Client.tick() end
+    assert(calls==previous+1,'ownership acquisition repairs traits')
+    local failed=zombie(66000); failed.fail=true
+    Client.enqueue(failed,true)
+    for i=1,7 do Client.tick() end
+    assert(settings.Cognition==3 and settings.Sight==2 and settings.Hearing==2 and settings.DoorOpeningPercentage==25)
+    assert(failed.walk=='sprint2' and failed.speed==0.93 and failed.under)
+    local pending=zombie(0)
+    Client.enqueue(pending,true)
+    Client.tick(); pending.outfit=66001
+    for i=1,7 do Client.tick() end
+    assert(pending.md.Apocalipse_TSY_ClientTraits)
+    local dead=zombie(66002); dead.dead=true
+    previous=calls; Client.enqueue(dead,true); Client.tick()
+    assert(calls==previous)
+    local changing=zombie(66003)
+    Client.enqueue(changing,true)
+    Client.tick(); Client.tick()
+    Client.onServerCommand('RegionManager','AllZoneBoundaries')
+    for i=1,7 do Client.tick() end
+    assert(changing.md.Apocalipse_TSY_ClientTraits,'configuration refresh restarts staged profile')
+
+    -- Stream out before every stage, including the final cache/metadata step.
+    for stage=1,7 do
+        local streaming=zombie(67000+stage)
+        Client.enqueue(streaming,true)
+        for i=1,stage-1 do Client.tick() end
+        previous=calls
+        local record=streaming.md.Apocalipse_TSY_ClientTraits
+        streaming.unloaded=true
+        function streaming:getModData() error('unloaded metadata access') end
+        for i=1,8 do Client.tick() end
+        assert(calls==previous,'unloaded job reached initializer at stage '..stage)
+        assert(streaming.md.Apocalipse_TSY_ClientTraits==record)
+        Client.update(streaming) -- Must not requeue zombies outside loaded world.
+        for i=1,8 do Client.tick() end
+        assert(calls==previous)
+    end
+    for _,kind in ipairs({'detached','stale'}) do
+        local streaming=zombie(kind=='detached' and 68001 or 68002)
+        Client.enqueue(streaming,true)
+        for i=1,5 do Client.tick() end
+        streaming[kind]=true
+        previous=calls
+        for i=1,8 do Client.tick() end
+        assert(calls==previous,'stale square/object membership must discard '..kind)
+        assert(not Client.apply(streaming,{doors=true,sight=1,hearing=3}))
+        assert(calls==previous,'direct applier must also reject unloaded objects')
+        streaming[kind]=false
+        Client.update(streaming)
+        for i=1,7 do Client.tick() end
+        assert(calls==previous+1,'reloaded zombie should start fresh')
+    end
+    local recycled=zombie(69001)
+    Client.enqueue(recycled,true)
+    for i=1,5 do Client.tick() end
+    previous=calls
+    recycled.onlineId=recycled.onlineId+1
+    for i=1,8 do Client.tick() end
+    assert(calls==previous,'old job must not apply to a recycled incarnation')
+    Client.update(recycled)
+    for i=1,7 do Client.tick() end
+    assert(calls==previous+1)
+    local replaced=zombie(69002)
+    Client.enqueue(replaced,true)
+    for i=1,5 do Client.tick() end
+    Client.enqueue(replaced,true) -- New creation replaces the old queued job.
+    previous=calls
+    for i=1,8 do Client.tick() end
+    assert(calls==previous+1,'superseded job must not invalidate its replacement')
+`, '42.18 deterministic cognition/senses and paced queue');
+
 if (!process.env.REGIONS_MOD) {
     for (const name of ['publish-workshop.yml', 'steam-workshop.yml']) {
         const document = YAML.parseDocument(fs.readFileSync(path.resolve(__dirname, '../.github/workflows', name), 'utf8'), { uniqueKeys: true });
         assert.deepEqual(document.errors, []);
     }
 }
-console.log('Lua syntax, translation JSON, sandbox defaults, coverage boundaries and PvP behavior passed for both versions.');
+console.log('Lua syntax, JSON, sandbox/PvP checks and latest-version deterministic zombie queue passed.');

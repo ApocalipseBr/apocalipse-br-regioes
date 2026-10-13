@@ -3,6 +3,11 @@
 Investigation of the local mod and decompiled B42 sources, 2026-10-13.
 These are design findings, not a gameplay implementation or performance measurement.
 
+Update: a Lua-only cognition/sight/hearing prototype is now implemented in the
+latest mod version (42.18). See `docs/zombie-traits-prototype.md` for its actual
+queue, identity, caching and sandbox-restoration contract. The investigation
+below describes the engine and the mod state before that implementation.
+
 ## Conclusion
 
 A pure hash can replace per-zombie trait decision requests and confirmations.
@@ -96,7 +101,8 @@ properties merely because they appear in ZombieLore.
 
 Public Java fields are not proof that zombie.field=value is writable through
 Kahlua. The existing mod notes this bridge limitation; LuaManager exposes field
-inspection, but no generic field-write global was found in this investigation.
+inspection only in debug mode in the inspected snapshot. Java reflection Field
+and Method exposure is also debug-only; it is not a production setter fallback.
 A narrow Java helper for these cached fields is the cleanest route if arbitrary
 memory/strength changes are required. Runtime interop still needs in-game checks.
 
