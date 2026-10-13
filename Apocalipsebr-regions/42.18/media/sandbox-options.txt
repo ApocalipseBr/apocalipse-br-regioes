@@ -245,7 +245,7 @@ option RegionManager.PendingConfirmSweepEveryEpochs
 option RegionManager.AutomaticSafeZones
 {
     type = boolean,
-    default = false,
+    default = true,
     page = RegionManager,
     translation = RegionManager_AutomaticSafeZones,
 }

@@ -45,6 +45,8 @@ end
 local function buildZoneBoundariesPayload()
     local zoneList = {}
     for _, data in pairs(RegionManager.Server.registeredZones or {}) do
+        local message = data.properties.message
+        if type(message) ~= "string" or not message:match("%S") then message = "" end
         local zombieTraits = {}
         for _, key in ipairs(RegionManager.ZombieTraits.Keys) do
             zombieTraits[key] = data.properties[key]
@@ -68,9 +70,9 @@ local function buildZoneBoundariesPayload()
             badHearingChance = data.properties.badHearingChance or 0,
             zombieArmorFactor = data.properties.zombieArmorFactor or 0,
             resistantChance = data.properties.resistantChance or 0,
-            announceEntry = data.properties.announceEntry or false,
-            announceExit = data.properties.announceExit or false,
-            message = data.properties.message or "",
+            announceEntry = message ~= "",
+            announceExit = false,
+            message = message,
             categories = data.region.categories or {},
             customProperties = data.region.customProperties or {},
             enabled = data.region.enabled ~= false,

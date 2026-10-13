@@ -164,9 +164,10 @@ local function checkPlayerZone(player)
         if not PreviousZones[zoneId] then
             log("Player ENTERED zone: " .. zoneData.name)
 
-            -- Show notification if announceEntry is enabled
-            if zoneData.announceEntry ~= false then
-                local message = zoneData.message
+            -- The message itself controls entry notifications, including old
+            -- regions saved with the former announcement flags disabled.
+            local message = zoneData.message
+            if type(message) == "string" and message:match("%S") then
                 local color = zoneData.color or {r=255, g=255, b=255}
                 player:Say(message, color.r, color.g, color.b, UIFont.Medium, 3, "radio")
             end
@@ -180,13 +181,6 @@ local function checkPlayerZone(player)
     for zoneId, zoneData in pairs(PreviousZones) do
         if not currentZones[zoneId] then
             log("Player EXITED zone: " .. zoneData.name)
-
-            -- Show notification if announceExit is enabled
-            if zoneData.announceExit then
-                local message = "Saiu: " .. zoneData.name
-                local color = zoneData.color or {r=255, g=255, b=255}
-                player:Say(message, 0.5, 0.5, 0.5, UIFont.Medium, 3, "radio")
-            end
 
             -- Notify registered modules (e.g., PVP module)
             notifyZoneExited(player, zoneId, zoneData)

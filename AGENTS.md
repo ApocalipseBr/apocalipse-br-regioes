@@ -86,7 +86,8 @@ Options live in each media tree's `sandbox-options.txt`, outside any module.
 For new work, edit only the latest version's options and translations.
 New region options use the `RegionManager` namespace and page:
 
-- `AutomaticSafeZones`: boolean, default **false**. Covers the fixed map bounds
+- `AutomaticSafeZones`: boolean, default **true** in 42.18 (**false** in historical
+  42.14). Covers the fixed map bounds
   outside enabled PvP regions. Manual safe zones work independently. Restart
   the server after changing coverage to rebuild registered zones.
 - `EnforcePVP`: boolean, default **true**. False disables the mod's automatic

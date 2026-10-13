@@ -1,116 +1,47 @@
 [h1]ApocalipseBR - Regiões[/h1]
 
-Region management for Project Zomboid Build 42 multiplayer servers. Create zones with custom PVP rules, zombie overrides, boss zombies, and sprinter screams.
+Region management for Project Zomboid Build 42 multiplayer servers. Create regions with custom PvP rules, zombie behavior, announcements, boss zombies, and sprinter screams.
 
-[hr][/hr]
-
-[h2]Features[/h2]
-
-[h3]Zone System[/h3]
+[h2]Region Builder - Updated for 42.18[/h2]
 [list]
-[*] Create zones anywhere on the map with custom rules
-[*] Zone types: PVP, Sprinters, Shamblers, Safe Zone, Loot Bonus, Dead Zone, Custom
-[*] Auto-generated safe zones fill the entire map - no gaps
-[*] Overlapping zones merge smartly
-[*] Edit zones via .txt config file or admin Panel - no code needed
-[*] Admin panel for editing, creating and teleporting to regions
-[*] Players can see the regions through the admin panel but they can't edit or create regions
+[*] Two-column editor: map on the left, scrollable properties on the right.
+[*] Drag to draw a region; pan and zoom to fine-tune boundaries.
+[*] Right-click the map to set either corner or cancel drawing.
+[*] Create, edit, and delete regions in game, or use the region config file.
+[*] Choose PvP, safe zone, or inherit/neutral behavior.
+[*] Optional entry message: fill it in to notify entering players, or leave blank for silence.
 [/list]
 
-[h3]PVP Zones[/h3]
+[h2]Per-Region Zombie Settings[/h2]
 [list]
-[*] PVP auto-enables when entering PVP zones, auto-disables when leaving
-[*] Anti-exploit: rapid safety toggling triggers a lockout
+[*] Percentage controls for sprinters, shamblers, toughness, cognition (door opening), vision, and hearing.
+[*] Tough zombies can absorb 1-99 extra hits before taking normal damage.
+[*] Cognition, vision, and hearing use consistent trait rolls per zombie.
+[*] Blank trait fields inherit defaults; explicit 0% disables that chance.
+[*] Chances are priority thresholds, not weighted distributions. Hover the trait rules button for details.
 [/list]
 
-[h3]Per-Zone Zombie Overrides[/h3]
-Set percentage chances (0-100%) per zone for:
+[h2]PvP and Safe Zones[/h2]
 [list]
-[*] Speed (Sprinter / Shambler), Vision, Hearing, Toughness, Strength, Memory, Cognition
-[*] Zombie armor and tough zombie extra hits (1-99)
+[*] Automatic safe-zone coverage outside PvP regions within the supported base-map bounds; enabled by default.
+[*] Forced PvP on region entry is enabled by default. Disabling enforcement preserves vanilla safety controls.
+[*] Manual safe zones remain protected independently of automatic coverage.
 [/list]
 
-[h3]Boss Zombies[/h3]
+[h2]Bosses and Sprinter Screams[/h2]
 [list]
-[*] Register boss zombie types by outfit - guaranteed stats, custom health, theme music, sound effects
-[*] Other mods can register their own boss modules via the API
+[*] Outfit-based boss modules with custom stats, health, music, and sound effects.
+[*] Sprinter screams with configurable chances, volume, range, cooldowns, and nearby zombie attraction.
+[*] Custom sprinter movement and lunge animations.
+[*] Multiplayer toughness hit updates are sent only to nearby players.
 [/list]
 
-[h3]Sprinter Screams[/h3]
-Based on SIMBAproduz's "theySEE YOU", enhanced and integrated:
-[list]
-[*] Sprinters scream on discovery, close-up, and during chases
-[*] 62 unique voice files - no repetition
-[*] Screams attract nearby zombies (horde pull)
-[*] Configurable via sandbox options (chances, volumes, ranges, cooldowns)
-[/list]
+[h2]Quick Start[/h2]
+Join as admin, right-click the ground, open Regions Panel, and select New Region. Draw the area, fill in its properties, and submit. Use Edit Region to revise it.
 
-[h3]Sprinter Animations[/h3]
-[list]
-[*] Custom lunge and movement animations for sprinters
-[*] 5 sprint variants with multiplayer sync
-[/list]
+Region options are on the RegionManager sandbox page; scream options are under Apocalipse_TSY. Restart the server after changing automatic safe-zone coverage.
 
-[hr][/hr]
+[b]Requires:[/b] Project Zomboid Build 42, minimum 42.14. New builder and cognition/vision/hearing controls target 42.18.
 
-[h2]How To Add Regions (Admin Panel)[/h2]
-This mod includes an in-game map picker so server admins can create regions without editing code.
-
-[h3]Step-by-step[/h3]
-[list]
-[*] Join your server with an admin account.
-[*] Right click anywhere in the ground to open the context menu, open the Regions Admin Panel and choose Create New Region.
-[*] In the map picker, click the map to set Point 1 (first corner), then click again to set Point 2 (second corner).
-[*] Fill in the form (name, flags, zombie properties, maxHits, and optional message).
-[*] Click Submit to create the region.
-[*] Use the admin region list to review, test, and teleport to your new region.
-[/list]
-
-[h3]Configuration Tips[/h3]
-[list]
-[*] Start simple: set Name + PVP Zone first, then tune zombie stats in small increments.
-[*] Percent values are chances (0-100) per property and are evaluated using one random roll.
-[*] If conflicting chances are both 100% (for example 100% sprinters and 100% shamblers), the first matching rule in evaluation order will always win.
-[*] maxHits applies only when a zombie rolls as Tough; it defines extra hits absorbed before the zombie starts taking normal damage.
-[*] Keep entry/exit announcements enabled while testing so players can confirm region boundaries.
-[/list]
-
-[h3]Recommended Workflow For Live Servers[/h3]
-[list]
-[*] Create the region in a low-population period.
-[*] Teleport to edges and verify boundaries before announcing it to players.
-[*] Apply one gameplay change at a time (PVP, then speed, then senses, etc.) and monitor results.
-[/list]
-
-[hr][/hr]
-
-[h2]Sandbox Options[/h2]
-All configurable under the [b]Apocalipse_TSY[/b] sandbox page:
-[list]
-[*] Scream timing (day only / night only / always)
-[*] Scream chances, volumes, and ranges
-[*] Horde alert toggle and radius
-[*] Cluster anti-spam settings
-[*] Debug mode
-[/list]
-
-[hr][/hr]
-
-[h2]Changelog[/h2]
-[list]
-[*] Optimized tough zombie armor hit sync in multiplayer: armor/toughness hit updates are now sent only to players near the zombie being hit instead of every online player.
-[/list]
-
-[hr][/hr]
-
-[h2]Requirements[/h2]
-[list]
-[*] Project Zomboid Build 42 (≥ 42.14.0)
-[*] Designed for multiplayer (also works in singleplayer)
-[/list]
-
-[h2]Credits[/h2]
-[list]
-[*] [b]Author:[/b] Hypothetic
-[*] Sprinter scream system originally by SIMBAproduz / "theySEE YOU"
-[/list]
+[b]Author:[/b] Hypothetic
+[b]Credits:[/b] Sprinter scream system based on SIMBAproduz's "theySEE YOU".

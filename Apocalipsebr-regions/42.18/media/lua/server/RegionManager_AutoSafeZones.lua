@@ -191,7 +191,8 @@ end
 ---@return RegionDefinition[] autoRegions Auto-generated safe zone regions
 function RegionManager.AutoSafeZones.generateSafeZones(configuredRegions)
     local options = SandboxVars and SandboxVars.RegionManager
-    if not options or options.AutomaticSafeZones ~= true then
+    -- Missing settings use the enabled sandbox default; explicit false opts out.
+    if options and options.AutomaticSafeZones == false then
         return {}
     end
 

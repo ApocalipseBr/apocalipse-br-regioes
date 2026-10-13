@@ -52,7 +52,7 @@
     "Sandbox_RegionManager_PendingConfirmSweepEveryEpochs": "Pending confirmation sweep interval (epochs)",
     "Sandbox_RegionManager_PendingConfirmSweepEveryEpochs_tooltip": "How often pending-confirmation cleanup runs on the client.",
     "Sandbox_RegionManager_AutomaticSafeZones": "Cover the map with automatic non-PvP zones",
-    "Sandbox_RegionManager_AutomaticSafeZones_tooltip": "When enabled, covers the mod's configured map bounds with non-PvP zones, excluding enabled PvP regions. Disabled by default. Manually configured safe zones remain active. Restart the server after changing this option.",
+    "Sandbox_RegionManager_AutomaticSafeZones_tooltip": "When enabled, covers the mod's configured map bounds with non-PvP zones, excluding enabled PvP regions. Enabled by default. Manually configured safe zones remain active. Restart the server after changing this option.",
     "Sandbox_RegionManager_EnforcePVP": "Enforce PvP inside PvP zones",
     "Sandbox_RegionManager_EnforcePVP_tooltip": "When enabled, forces players to disable safety inside PvP zones and bypasses the safety cooldown. When disabled, players control safety using the vanilla toggle timer and cooldown. Native non-PvP zone protection remains active."
 }

@@ -1,17 +1,19 @@
 -- ============================================================================
 -- File: media/lua/client/RegionManager_MapPicker.lua
--- Admin map picker for creating new regions by selecting two points on the map
+-- Admin region editor with an embedded map and scrollable properties sidebar
 -- ============================================================================
 if not isClient() then
     return
 end
 
 require "RegionManager_Config"
+require "ISUI/Maps/ISWorldMap"
 require "ISUI/ISPanel"
+require "ISUI/ISContextMenu"
 require "ISUI/ISButton"
 require "ISUI/ISLabel"
 require "ISUI/ISTextEntryBox"
-require "ISUI/ISTickBox"
+require "ISUI/ISComboBox"
 require "ISUI/ISScrollBar"
 
 RegionManager.MapPicker = RegionManager.MapPicker or {}
@@ -51,8 +53,129 @@ end
 
 -- Selection states
 local STATE_PICK_FIRST = 0
-local STATE_PICK_SECOND = 1
 local STATE_READY = 2
+
+-- Embedded map, using the PvP Territory editor's input and map styling flow.
+ISRegionMapWidget = ISPanel:derive("ISRegionMapWidget")
+
+function ISRegionMapWidget:new(x, y, width, height, picker)
+    local o = ISPanel:new(x, y, width, height)
+    setmetatable(o, self)
+    self.__index = self
+    o.picker = picker
+    return o
+end
+
+function ISRegionMapWidget:instantiate()
+    self.javaObject = UIWorldMap.new(self)
+    self.mapAPI = self.javaObject:getAPIv3()
+    self.mapAPI:setMapItem(MapItem.getSingleton())
+    self.javaObject:setX(self.x)
+    self.javaObject:setY(self.y)
+    self.javaObject:setWidth(self.width)
+    self.javaObject:setHeight(self.height)
+    self.javaObject:setDoStencil(true)
+end
+
+function ISRegionMapWidget:onMouseDown(x, y)
+    if self.picker.drawingDrag then
+        self.picker.savedPoint1 = self.picker.point1
+        self.picker.savedPoint2 = self.picker.point2
+        self.picker.point1 = {x = toInt(self.mapAPI:uiToWorldX(x, y)), y = toInt(self.mapAPI:uiToWorldY(x, y))}
+        self.picker.point2 = self.picker.point1
+        self.drawing = true
+        self.picker:updateSelection()
+    else
+        self.dragging = true
+        self.dragStartX, self.dragStartY = x, y
+        self.dragStartCX = self.mapAPI:getCenterWorldX()
+        self.dragStartCY = self.mapAPI:getCenterWorldY()
+        self.dragStartZoomF = self.mapAPI:getZoomF()
+        self.dragStartWorldX = self.mapAPI:uiToWorldX(x, y)
+        self.dragStartWorldY = self.mapAPI:uiToWorldY(x, y)
+    end
+    return true
+end
+
+function ISRegionMapWidget:onMouseMove(dx, dy)
+    local x, y = self:getMouseX(), self:getMouseY()
+    if self.drawing then
+        -- Clamp outside drags to the map viewport.
+        x, y = math.max(0, math.min(self.width, x)), math.max(0, math.min(self.height, y))
+        self.picker.point2 = {x = toInt(self.mapAPI:uiToWorldX(x, y)), y = toInt(self.mapAPI:uiToWorldY(x, y))}
+        self.picker:updateSelection()
+    elseif self.dragging then
+        if math.abs(x - self.dragStartX) > 4 or math.abs(y - self.dragStartY) > 4 then
+            self.dragMoved = true
+        end
+        if self.dragMoved then
+            local wx = self.mapAPI:uiToWorldX(x, y, self.dragStartZoomF, self.dragStartCX, self.dragStartCY)
+            local wy = self.mapAPI:uiToWorldY(x, y, self.dragStartZoomF, self.dragStartCX, self.dragStartCY)
+            self.mapAPI:centerOn(self.dragStartCX + self.dragStartWorldX - wx, self.dragStartCY + self.dragStartWorldY - wy)
+        end
+    end
+    return true
+end
+
+function ISRegionMapWidget:onMouseMoveOutside(dx, dy)
+    return self:onMouseMove(dx, dy)
+end
+
+function ISRegionMapWidget:onMouseUp(x, y)
+    if self.drawing then
+        self:onMouseMove(0, 0)
+        self.drawing = false
+        self.picker.drawingDrag = false
+        self.picker.savedPoint1, self.picker.savedPoint2 = nil, nil
+        self.picker:updateSelection()
+    end
+    self.dragging, self.dragMoved = false, false
+    return true
+end
+
+function ISRegionMapWidget:onMouseUpOutside(x, y)
+    return self:onMouseUp(x, y)
+end
+
+function ISRegionMapWidget:onMouseWheel(del)
+    self.mapAPI:zoomAt(self:getMouseX(), self:getMouseY(), del)
+    return true
+end
+
+function ISRegionMapWidget:onRightMouseDown(x, y)
+    return true
+end
+
+function ISRegionMapWidget:onRightMouseUp(x, y)
+    if self.picker.drawingDrag then
+        if self.drawing then
+            self.picker.point1, self.picker.point2 = self.picker.savedPoint1, self.picker.savedPoint2
+        end
+        self.drawing, self.dragging, self.picker.drawingDrag = false, false, false
+        self.picker.savedPoint1, self.picker.savedPoint2 = nil, nil
+        self.picker:updateSelection()
+        return true
+    end
+    local player = getPlayer()
+    if not player then return true end
+    local point = {x = toInt(self.mapAPI:uiToWorldX(x, y)), y = toInt(self.mapAPI:uiToWorldY(x, y))}
+    local context = ISContextMenu.get(player:getPlayerNum(), self:getAbsoluteX() + x, self:getAbsoluteY() + y)
+    context:addOption(T("SetStart"), self.picker, function(picker)
+        picker.point1 = point
+        picker:updateSelection()
+    end)
+    context:addOption(T("SetEnd"), self.picker, function(picker)
+        picker.point2 = point
+        picker:updateSelection()
+    end)
+    return true
+end
+
+function ISRegionMapWidget:render()
+    self:setStencilRect(0, 0, self.width, self.height)
+    self.picker:renderMapOverlay()
+    self:clearStencilRect()
+end
 
 function ISRegionMapPicker:initialise()
     ISPanel.initialise(self)
@@ -65,12 +188,11 @@ function ISRegionMapPicker:createChildren()
     local btnWid = 120
     local btnHgt = math.max(25, FONT_HGT_SMALL + 6)
     local fieldHgt = math.max(22, FONT_HGT_SMALL + 6)
-    local labelW = 100
 
     -- Title
     local panelTitle = T("Title")
     if self.isEditMode then
-        panelTitle = "Edit Region - Map Picker"
+        panelTitle = T("EditTitle")
     end
     self.titleLabel = ISLabel:new(pad, pad, FONT_HGT_MEDIUM, panelTitle, 1, 1, 1, 1, UIFont.Medium, true)
     self.titleLabel:initialise()
@@ -78,31 +200,25 @@ function ISRegionMapPicker:createChildren()
 
     -- ========== Map area ==========
     local mapY = pad + FONT_HGT_MEDIUM + pad
-    local formHeight = 250 -- space for form + status bar at bottom
-    local mapHeight = self.height - mapY - formHeight - btnHgt - pad * 3
-
-    self.mapX = pad
-    self.mapY = mapY
-    self.mapW = self.width - pad * 2
-    self.mapH = mapHeight
-
-    -- Create the world map widget
-    -- IMPORTANT: set dimensions BEFORE adding data (addData checks width/height > 0)
-    self.worldMap = UIWorldMap.new(nil)
-    self.worldMap:setX(self:getAbsoluteX() + self.mapX)
-    self.worldMap:setY(self:getAbsoluteY() + self.mapY)
-    self.worldMap:setWidth(self.mapW)
-    self.worldMap:setHeight(self.mapH)
-    self.worldMap:setDoStencil(true)
-
-    local api = self.worldMap:getAPIv1()
-    api:setBoolean("ClampBaseZoomToPoint5", false)
+    local btnY = self.height - btnHgt - pad
+    local formW = math.floor(self.width * 0.38)
+    local mapHeight = btnY - mapY - FONT_HGT_SMALL * 2 - pad * 2
+    self.mapX, self.mapY = pad, mapY
+    self.mapW, self.mapH = self.width - formW - pad * 3, mapHeight
+    self.mapWidget = ISRegionMapWidget:new(self.mapX, self.mapY, self.mapW, self.mapH, self)
+    self.mapWidget:initialise()
+    self.mapWidget:instantiate()
+    self:addChild(self.mapWidget)
+    self.worldMap = self.mapWidget.javaObject
+    local api = self.mapWidget.mapAPI
+    MapUtils.initDefaultMapData(self.mapWidget)
+    api:setBoundsFromWorld()
+    MapUtils.initDefaultStreetData(self.mapWidget)
+    MapUtils.initDefaultStyleV3(self.mapWidget)
+    api:getSymbolsAPIv2():initDefaultAnnotations()
     api:setBoolean("Isometric", false)
-    api:setBoolean("Features", true)
-    api:setBoolean("ImagePyramid", true)
-
-    -- Load map data from all available map directories
-    self:loadMapData(api)
+    api:setBoolean("HideUnvisited", false)
+    api:setBoolean("ClampBaseZoomToPoint5", false)
 
     -- ========== Status bar ==========
     local statusY = mapY + mapHeight + 4
@@ -116,12 +232,10 @@ function ISRegionMapPicker:createChildren()
     self:addChild(self.coordLabel)
 
     -- ========== Action buttons ==========
-    local btnY = self.height - btnHgt - pad
-
     -- ========== Scrollable form fields ==========
-    local formY = statusY + FONT_HGT_SMALL * 2 + pad
+    local formY = mapY
     local formH = btnY - formY - pad
-    self.formPanel = ISRegionMapFormPanel:new(pad, formY, self.width - pad * 2, formH)
+    self.formPanel = ISRegionMapFormPanel:new(self.mapX + self.mapW + pad, formY, formW, formH)
     self.formPanel:initialise()
     self.formPanel:instantiate()
     self.formPanel.background = true
@@ -186,87 +300,64 @@ function ISRegionMapPicker:createChildren()
     self.idEntry = addTextEntry("")
 
     addSpacer(2)
-    addSection(T("SecBehaviorNotes"))
-    addLabel(T("NoteSingleRoll"))
-    addLabel(T("NoteConflicts"))
-    addLabel(T("NoteEx100"))
-    addLabel(T("NoteEx50"))
-
-    addSpacer(2)
     addSection(T("SecFlags"))
-    local flagOptionCount = 3
-    local flagRowHgt = math.max(fieldHgt + 6, FONT_HGT_SMALL + 14)
-    local flagBoxPadding = 8
-    local flagBoxHeight = flagOptionCount * flagRowHgt + flagBoxPadding
-    self.boolTickBox = ISTickBox:new(formPad, rowY, entryW, flagBoxHeight, "", nil, nil)
-    self.boolTickBox:initialise()
-    self.boolTickBox:instantiate()
-    self.boolTickBox:setFont(UIFont.Small)
-    self.boolTickBox.itemHgt = flagRowHgt
-    self.boolTickBox.itemGap = 2
-    self.boolTickBox.textGap = 8
-    self.boolTickBox.boxSize = math.max(FONT_HGT_SMALL + 6, 16)
-    self.boolTickBox.choicesColor = {
-        r = 1,
-        g = 1,
-        b = 1,
-        a = 1
-    }
-    self.boolTickBox:addOption(T("FlagPVPZone"))
-    self.boolTickBox:addOption(T("FlagAnnounceEntry"))
-    self.boolTickBox:addOption(T("FlagAnnounceExit"))
-    self.formPanel:addChild(self.boolTickBox)
-    rowY = rowY + flagBoxHeight + 12
-
+    addLabel(T("LblPVPMode"))
+    self.pvpMode = ISComboBox:new(formPad, rowY, entryW, fieldHgt)
+    self.pvpMode:initialise()
+    self.pvpMode:instantiate()
+    self.pvpMode:addOption(T("PVPInherit"))
+    self.pvpMode:addOption(T("PVPSafe"))
+    self.pvpMode:addOption(T("PVPEnabled"))
+    self.formPanel:addChild(self.pvpMode)
+    rowY = rowY + fieldHgt + 8
+    self.chanceEntries = {}
+    local function chance(key, label, optional)
+        local entry = addNumericField(T(label))
+        entry:setText(optional and "" or "0")
+        entry.tooltip = T(optional and "TraitFieldHint" or "ChanceFieldHint")
+        self.chanceEntries[key] = entry
+        return entry
+    end
     addSection(T("SecSpeed"))
-    self.sprinterEntry = addNumericField(T("LblSprinter"))
-    self.shamblerEntry = addNumericField(T("LblShambler"))
-
-    -- addSection(T("SecVision"))
-    -- self.hawkVisionEntry = addNumericField(T("LblHawkVision"))
-    -- self.badVisionEntry = addNumericField(T("LblBadVision"))
-    -- self.normalVisionEntry = addNumericField(T("LblNormalVision"))
-    -- self.poorVisionEntry = addNumericField(T("LblPoorVision"))
-    -- self.randomVisionEntry = addNumericField(T("LblRandomVision"))
-
-    -- addSection(T("SecHearing"))
-    -- self.goodHearEntry = addNumericField(T("LblGoodHearing"))
-    -- self.badHearEntry = addNumericField(T("LblBadHearing"))
-    -- self.pinpointHearingEntry = addNumericField(T("LblPinpointHearing"))
-    -- self.normalHearingEntry = addNumericField(T("LblNormalHearing"))
-    -- self.poorHearingEntry = addNumericField(T("LblPoorHearing"))
-    -- self.randomHearingEntry = addNumericField(T("LblRandomHearing"))
-
-    -- addSection(T("SecMemory"))
-    -- self.memoryLongEntry = addNumericField(T("LblMemoryLong"))
-    -- self.memoryNormalEntry = addNumericField(T("LblMemoryNormal"))
-    -- self.memoryShortEntry = addNumericField(T("LblMemoryShort"))
-    -- self.memoryNoneEntry = addNumericField(T("LblMemoryNone"))
-    -- self.memoryRandomEntry = addNumericField(T("LblMemoryRandom"))
-
-    -- addSection(T("SecNavigation"))
-    -- self.navigationEntry = addNumericField(T("LblNavigation"))
-
+    self.sprinterEntry = chance("sprinterChance", "LblSprinter")
+    self.shamblerEntry = chance("shamblerChance", "LblShambler")
     addSection(T("SecToughness"))
-    -- self.resistEntry = addNumericField(T("LblResistant"))
-    self.toughnessEntry = addNumericField(T("LblTough"))
-    -- self.normalToughnessEntry = addNumericField(T("LblNormalToughness"))
-    -- self.fragileEntry = addNumericField(T("LblFragile"))
-    -- self.randomToughnessEntry = addNumericField(T("LblRandomToughness"))
-    -- self.superhumanEntry = addNumericField(T("LblSuperhuman"))
-    -- self.weakEntry = addNumericField(T("LblWeak"))
-    addLabel(T("NoteMaxHitsOnlyTough"))
-    addLabel(T("NoteMaxHitsDesc"))
+    self.toughnessEntry = chance("toughnessChance", "LblTough")
     self.maxHitsEntry = addNumericField(T("LblMaxHits"))
+    self.maxHitsEntry:setText("1")
+    self.maxHitsEntry.tooltip = T("NoteMaxHitsOnlyTough") .. " " .. T("NoteMaxHitsDesc")
 
-    addLabel(T("LblMessage"))
+    addSection(T("SecCognition"))
+    self.navigationEntry = chance("navigationChance", "LblDoorOpening", true)
+    addSection(T("SecVision"))
+    self.hawkVisionEntry = chance("hawkVisionChance", "LblHawkVision", true)
+    self.normalVisionEntry = chance("normalVisionChance", "LblNormalVision", true)
+    self.poorVisionEntry = chance("poorVisionChance", "LblPoorVision", true)
+    self.badVisionEntry = chance("badVisionChance", "LblBadVision", true)
+    self.randomVisionEntry = chance("randomVisionChance", "LblRandomVision", true)
+    addSection(T("SecHearing"))
+    self.pinpointHearingEntry = chance("pinpointHearingChance", "LblPinpointHearing", true)
+    self.goodHearEntry = chance("goodHearingChance", "LblGoodHearing", true)
+    self.normalHearingEntry = chance("normalHearingChance", "LblNormalHearing", true)
+    self.poorHearingEntry = chance("poorHearingChance", "LblPoorHearing", true)
+    self.badHearEntry = chance("badHearingChance", "LblBadHearing", true)
+    self.randomHearingEntry = chance("randomHearingChance", "LblRandomHearing", true)
+    addSection(T("SecBehaviorNotes"))
+    local help = ISButton:new(formPad, rowY, entryW, fieldHgt, T("TraitHelp"), nil, nil)
+    help.tooltip = T("TraitRules")
+    help:initialise()
+    self.formPanel:addChild(help)
+    rowY = rowY + fieldHgt + 8
+
+    addLabel(T("LblEntryMessage"))
     self.messageEntry = addTextEntry("")
+    self.messageEntry.tooltip = T("EntryMessageHint")
 
     -- Allow the form to grow arbitrarily while remaining inside the window.
     self.formPanel:setScrollHeight(rowY + formPad)
     self.formPanel:updateScrollbars()
 
-    self.resetBtn = ISButton:new(pad, btnY, btnWid, btnHgt, T("BtnReset"), self, ISRegionMapPicker.onReset)
+    self.resetBtn = ISButton:new(pad, btnY, btnWid, btnHgt, T("BtnDraw"), self, ISRegionMapPicker.onReset)
     self.resetBtn:initialise()
     self.resetBtn:instantiate()
     self.resetBtn.borderColor = {
@@ -277,7 +368,7 @@ function ISRegionMapPicker:createChildren()
     }
     self:addChild(self.resetBtn)
 
-    local submitText = self.isEditMode and "Save Changes" or T("BtnSubmit")
+    local submitText = self.isEditMode and T("BtnSave") or T("BtnSubmit")
     self.submitBtn =
         ISButton:new(pad + btnWid + pad, btnY, btnWid, btnHgt, submitText, self, ISRegionMapPicker.onSubmit)
     self.submitBtn:initialise()
@@ -353,48 +444,26 @@ function ISRegionMapPicker:createChildren()
         self.statusLabel.b = 0.3
 
         local props = r.customProperties or {}
-        self.boolTickBox:setSelected(1, props.pvpEnabled == true)
-        self.boolTickBox:setSelected(2, props.announceEntry == true)
-        self.boolTickBox:setSelected(3, props.announceExit == true)
+        self.pvpMode.selected = props.pvpEnabled == true and 3 or (props.pvpEnabled == false and 2 or 1)
 
         local function setNum(entry, value)
             if entry then
-                entry:setText(tostring(tonumber(value) or 0))
+                entry:setText(value ~= nil and tostring(value) or "")
             end
         end
 
-        setNum(self.sprinterEntry, props.sprinterChance)
-        setNum(self.shamblerEntry, props.shamblerChance)
-        setNum(self.hawkVisionEntry, props.hawkVisionChance)
-        setNum(self.badVisionEntry, props.badVisionChance)
-        setNum(self.normalVisionEntry, props.normalVisionChance)
-        setNum(self.poorVisionEntry, props.poorVisionChance)
-        setNum(self.randomVisionEntry, props.randomVisionChance)
-        setNum(self.goodHearEntry, props.goodHearingChance)
-        setNum(self.badHearEntry, props.badHearingChance)
-        setNum(self.pinpointHearingEntry, props.pinpointHearingChance)
-        setNum(self.normalHearingEntry, props.normalHearingChance)
-        setNum(self.poorHearingEntry, props.poorHearingChance)
-        setNum(self.randomHearingEntry, props.randomHearingChance)
-        setNum(self.resistEntry, props.resistantChance)
-        setNum(self.toughnessEntry, props.toughnessChance)
-        setNum(self.normalToughnessEntry, props.normalToughnessChance)
-        setNum(self.fragileEntry, props.fragileChance)
-        setNum(self.randomToughnessEntry, props.randomToughnessChance)
-        setNum(self.superhumanEntry, props.superhumanChance)
-        setNum(self.weakEntry, props.weakChance)
-        setNum(self.navigationEntry, props.navigationChance)
-        setNum(self.memoryLongEntry, props.memoryLongChance)
-        setNum(self.memoryNormalEntry, props.memoryNormalChance)
-        setNum(self.memoryShortEntry, props.memoryShortChance)
-        setNum(self.memoryNoneEntry, props.memoryNoneChance)
-        setNum(self.memoryRandomEntry, props.memoryRandomChance)
+        for key, entry in pairs(self.chanceEntries) do setNum(entry, props[key]) end
         setNum(self.maxHitsEntry, props.maxHits)
         self.messageEntry:setText(props.message or "")
     end
 
     -- Fit map bounds to the viewport on open so users start with a usable view.
     self:resetMapViewToFit()
+    self.drawingDrag = not self.isEditMode
+    self:updateSelection()
+    if self.point1 and self.point2 then
+        api:centerOn((self.point1.x + self.point2.x) / 2, (self.point1.y + self.point2.y) / 2)
+    end
 end
 
 function ISRegionMapPicker:resetMapViewToFit()
@@ -467,68 +536,6 @@ function ISRegionMapPicker:drawMapClippedRectBorder(rx, ry, rw, rh, a, r, g, b)
 end
 
 -- ============================================================================
--- Load map data from game directories
--- ============================================================================
-function ISRegionMapPicker:loadMapData(api)
-    local loaded = 0
-
-    -- Get map directories from the live world (MP-safe, unlike getMapDirectoryTable)
-    -- IsoWorld.instance:getMap() returns semicolon-separated dir names e.g. "Muldraugh, KY;West Point, KY"
-    local ok, mapStr = pcall(function()
-        return IsoWorld.instance:getMap()
-    end)
-    if ok and mapStr and mapStr ~= "" then
-        for dirName in string.gmatch(mapStr, "[^;]+") do
-            dirName = dirName:match("^%s*(.-)%s*$") -- trim whitespace
-
-            local dataPath = "media/maps/" .. dirName .. "/worldmap.xml"
-            local imgPath = "media/maps/" .. dirName
-
-            local ok1 = pcall(function()
-                api:addData(dataPath)
-            end)
-            local ok2 = pcall(function()
-                api:addImages(imgPath)
-            end)
-            pcall(function()
-                api:endDirectoryData()
-            end)
-
-            if ok1 or ok2 then
-                loaded = loaded + 1
-                print("[RegionManager MapPicker] Loaded map data: " .. dirName)
-            end
-        end
-    end
-
-    -- Fallback: try the default map if nothing loaded
-    if loaded == 0 then
-        pcall(function()
-            api:addData("media/maps/Muldraugh, KY/worldmap.xml")
-        end)
-        pcall(function()
-            api:addImages("media/maps/Muldraugh, KY")
-        end)
-        pcall(function()
-            api:endDirectoryData()
-        end)
-        print("[RegionManager MapPicker] Loaded fallback map data: Muldraugh, KY")
-    end
-
-    -- Set bounds from world metaGrid if available (most reliable in-game)
-    local boundsOk = pcall(function()
-        api:setBoundsFromWorld()
-    end)
-    if not boundsOk then
-        pcall(function()
-            api:setBoundsFromData()
-        end)
-    end
-
-    print("[RegionManager MapPicker] Map data loaded, data count: " .. tostring(api:getDataCount()))
-end
-
--- ============================================================================
 -- Rendering — map widget + selection overlay
 -- ============================================================================
 function ISRegionMapPicker:prerender()
@@ -538,18 +545,7 @@ function ISRegionMapPicker:prerender()
     self:drawRect(self.mapX, self.mapY, self.mapW, self.mapH, 1, 0.05, 0.05, 0.05)
 end
 
-function ISRegionMapPicker:render()
-    ISPanel.render(self)
-
-    -- Render the world map widget within our map area
-    local absX = self:getAbsoluteX() + self.mapX
-    local absY = self:getAbsoluteY() + self.mapY
-    self.worldMap:setX(absX)
-    self.worldMap:setY(absY)
-    self.worldMap:setWidth(self.mapW)
-    self.worldMap:setHeight(self.mapH)
-    self.worldMap:render()
-
+function ISRegionMapPicker:renderMapOverlay()
     local api = self.worldMap:getAPIv1()
 
     -- Draw existing zones on map as semi-transparent overlays
@@ -648,13 +644,9 @@ function ISRegionMapPicker:render()
         local mwy = toInt(api3:mouseToWorldY())
         if mwx and mwy then
             local coordText = getText("UI_RMMP_CoordMouse", mwx, mwy)
-            if self.point1 then
-                coordText = coordText .. "  |  " ..
-                                getText("UI_RMMP_CoordPoint1", toInt(self.point1.x), toInt(self.point1.y))
-            end
-            if self.point2 then
-                coordText = coordText .. "  |  " ..
-                                getText("UI_RMMP_CoordPoint2", toInt(self.point2.x), toInt(self.point2.y))
+            if self.point1 and self.point2 then
+                coordText = coordText .. " | " .. getText("UI_RMMP_SelectionSize",
+                    math.abs(self.point2.x - self.point1.x) + 1, math.abs(self.point2.y - self.point1.y) + 1)
             end
             self.coordLabel:setName(coordText)
         end
@@ -684,137 +676,28 @@ function ISRegionMapPicker:isMouseOverFormPanel()
 end
 
 function ISRegionMapPicker:scrollFormPanel(del)
-    if not self.formPanel then
-        return false
-    end
-    local current = self.formPanel:getYScroll() or 0
-    local maxY = math.max(0, (self.formPanel:getScrollHeight() or self.formPanel.height) - self.formPanel.height)
-    local nextY = math.max(0, math.min(maxY, current - del * 28))
-    self.formPanel:setYScroll(nextY)
-    self.formPanel:updateScrollbars()
-    return true
-end
-
-function ISRegionMapPicker:onMouseDown(x, y)
-    -- Let dragging work via the map (panning)
-    if self:isMouseOverMap() then
-        self.isPanningMap = true
-        self.panStartX = x
-        self.panStartY = y
-        self.panDragDist = 0
-        return true
-    end
-    return ISPanel.onMouseDown(self, x, y)
-end
-
-function ISRegionMapPicker:onMouseUp(x, y)
-    if self.isPanningMap then
-        self.isPanningMap = false
-        -- Only register a click if the mouse didn't drag significantly (< 5px)
-        if self.panDragDist < 5 and self:isMouseOverMap() then
-            self:handleMapClick()
-        end
-        return true
-    end
-    return ISPanel.onMouseUp(self, x, y)
-end
-
-function ISRegionMapPicker:panMap(dx, dy)
-    local api = self.worldMap:getAPIv1()
-    -- Convert a screen-pixel delta to a world-space delta by sampling the
-    -- uiToWorld transform at the map centre and at centre+delta.  This gives
-    -- the correct magnitude at every zoom level without needing worldScale.
-    local cx = self.mapW * 0.5
-    local cy = self.mapH * 0.5
-    local wx1 = api:uiToWorldX(cx, cy)
-    local wy1 = api:uiToWorldY(cx, cy)
-    local wx2 = api:uiToWorldX(cx - dx, cy - dy)
-    local wy2 = api:uiToWorldY(cx - dx, cy - dy)
-    api:moveView(wx2 - wx1, wy2 - wy1)
-end
-
-function ISRegionMapPicker:onMouseMove(dx, dy)
-    if self.isPanningMap then
-        self.panDragDist = (self.panDragDist or 0) + math.abs(dx) + math.abs(dy)
-        self:panMap(dx, dy)
-        return true
-    end
-    return ISPanel.onMouseMove(self, dx, dy)
-end
-
-function ISRegionMapPicker:onMouseMoveOutside(dx, dy)
-    if self.isPanningMap then
-        self.panDragDist = (self.panDragDist or 0) + math.abs(dx) + math.abs(dy)
-        self:panMap(dx, dy)
-        return true
-    end
-    return ISPanel.onMouseMoveOutside(self, dx, dy)
+    return self.formPanel and self.formPanel:onMouseWheel(del) or false
 end
 
 function ISRegionMapPicker:onMouseWheel(del)
-    if self:isMouseOverMap() then
-        local api = self.worldMap:getAPIv1()
-        local mx = self:getMouseX() - self.mapX
-        local my = self:getMouseY() - self.mapY
-        -- Use a proportional delta so each scroll tick is a consistent
-        -- fraction of the current zoom level (smooth at any zoom depth).
-        local zoomF = api:getZoomF()
-        local delta = -del * math.max(zoomF * 0.15, 0.25)
-        api:zoomAt(mx, my, delta)
-        return true
-    end
-    if self:isMouseOverFormPanel() then
-        return self:scrollFormPanel(del)
-    end
+    if self:isMouseOverFormPanel() then return self:scrollFormPanel(del) end
     return false
 end
 
-function ISRegionMapPicker:handleMapClick()
-    local api = self.worldMap:getAPIv1()
-    local worldX = toInt(api:mouseToWorldX())
-    local worldY = toInt(api:mouseToWorldY())
+function ISRegionMapFormPanel:onMouseWheel(del)
+    local current = self:getYScroll() or 0
+    local minimum = math.min(0, self.height - self:getScrollHeight())
+    self:setYScroll(math.max(minimum, math.min(0, current + del * 28)))
+    self:updateScrollbars()
+    return true
+end
 
-    if worldX == nil or worldY == nil then
-        return
-    end
-
-    if self.selectionState == STATE_PICK_FIRST then
-        self.point1 = {
-            x = worldX,
-            y = worldY
-        }
-        self.point2 = nil
-        self.selectionState = STATE_PICK_SECOND
-        self.statusLabel:setName(T("StatusPickSecond"))
-        self.statusLabel.r = 1;
-        self.statusLabel.g = 0.7;
-        self.statusLabel.b = 0.3
-        print("[RegionManager MapPicker] Point 1 selected: " .. math.floor(worldX) .. ", " .. math.floor(worldY))
-
-    elseif self.selectionState == STATE_PICK_SECOND then
-        self.point2 = {
-            x = worldX,
-            y = worldY
-        }
-        self.selectionState = STATE_READY
-        self.statusLabel:setName(T("StatusReady"))
-        self.statusLabel.r = 0.3;
-        self.statusLabel.g = 1;
-        self.statusLabel.b = 0.3
-        print("[RegionManager MapPicker] Point 2 selected: " .. math.floor(worldX) .. ", " .. math.floor(worldY))
-
-        -- Auto-generate ID from name if name is filled
-        self:updateIdFromName()
-
-    elseif self.selectionState == STATE_READY then
-        -- Allow re-picking second point while in ready state
-        self.point2 = {
-            x = worldX,
-            y = worldY
-        }
-        self.statusLabel:setName(T("StatusSecondUpdated"))
-        print("[RegionManager MapPicker] Point 2 updated: " .. math.floor(worldX) .. ", " .. math.floor(worldY))
-    end
+function ISRegionMapPicker:updateSelection()
+    self.selectionState = self.point1 and self.point2 and STATE_READY or STATE_PICK_FIRST
+    self.statusLabel:setName(T(self.drawingDrag and "DrawHint" or (self.selectionState == STATE_READY and "SelectionReady" or "MapHint")))
+    self.statusLabel.r, self.statusLabel.g, self.statusLabel.b = 0.8, 1, 0.8
+    self.coordLabel:setName(self.point1 and self.point2 and getText("UI_RMMP_SelectionSize",
+        math.abs(self.point2.x - self.point1.x) + 1, math.abs(self.point2.y - self.point1.y) + 1) or T("CoordNone"))
 end
 
 -- ============================================================================
@@ -837,27 +720,24 @@ function ISRegionMapPicker:getPropertiesFromForm(baseProps)
         end
     end
 
-    local function setNumProperty(propName, entry)
-        if entry then
-            props[propName] = tonumber(entry:getText()) or 0
-        end
-        return props[propName] or 0
-    end
-    local maxHits = math.floor(setNumProperty("maxHits", self.maxHitsEntry))
+    local maxHits = math.floor(tonumber(self.maxHitsEntry:getText()) or 1)
     if maxHits < 1 then
         maxHits = 1
     end
     if maxHits > 99 then
         maxHits = 99
     end
-    props.pvpEnabled = self.boolTickBox:isSelected(1)
-    props.announceEntry = self.boolTickBox:isSelected(2)
-    props.announceExit = self.boolTickBox:isSelected(3)
-    setNumProperty("sprinterChance", self.sprinterEntry)
-    setNumProperty("shamblerChance", self.shamblerEntry)
-    setNumProperty("toughnessChance", self.toughnessEntry)
+    props.pvpEnabled = nil
+    if self.pvpMode.selected == 2 then props.pvpEnabled = false end
+    if self.pvpMode.selected == 3 then props.pvpEnabled = true end
+    for key, entry in pairs(self.chanceEntries or {}) do
+        local value = tonumber(entry:getText())
+        props[key] = value and math.max(0, math.min(100, value)) or nil
+    end
     props.maxHits = maxHits
-    props.message = self.messageEntry:getText() or ""
+    props.message = (self.messageEntry:getText() or ""):match("^%s*(.-)%s*$")
+    props.announceEntry = props.message ~= ""
+    props.announceExit = false
 
     return props
 end
@@ -866,10 +746,11 @@ end
 -- Button callbacks
 -- ============================================================================
 function ISRegionMapPicker:onReset()
-    self.point1 = nil
-    self.point2 = nil
+    self.drawingDrag = true
+    self.mapWidget.drawing, self.mapWidget.dragging = false, false
+    self.savedPoint1, self.savedPoint2 = nil, nil
     self.selectionState = STATE_PICK_FIRST
-    self.statusLabel:setName(T("StatusPickFirst"))
+    self.statusLabel:setName(T("DrawHint"))
     self.statusLabel.r = 1;
     self.statusLabel.g = 1;
     self.statusLabel.b = 0.5
@@ -882,9 +763,18 @@ function ISRegionMapPicker:onSubmit()
         return
     end
 
-    if not self.point1 or not self.point2 then
+    if self.drawingDrag or not self.point1 or not self.point2 then
         player:Say(T("SaySelectBoth"), 1, 0.3, 0.3, UIFont.Small, 2, "radio")
         return
+    end
+
+    for _, entry in pairs(self.chanceEntries or {}) do
+        local text = entry:getText()
+        local value = tonumber(text)
+        if text:match("%S") and (not value or value ~= value or value < 0 or value > 100) then
+            player:Say(T("InvalidChance"), 1, 0.3, 0.3, UIFont.Small, 2, "radio")
+            return
+        end
     end
 
     local name = self.nameEntry:getText()
@@ -893,7 +783,7 @@ function ISRegionMapPicker:onSubmit()
         return
     end
 
-    self:updateIdFromName()
+    if self.idEntry:getText() == "" then self:updateIdFromName() end
     local id = self.idEntry:getText()
     if not id or id == "" then
         player:Say(T("SayEnterId"), 1, 0.3, 0.3, UIFont.Small, 2, "radio")
@@ -910,16 +800,16 @@ function ISRegionMapPicker:onSubmit()
         y1 = math.floor(self.point1.y),
         x2 = math.floor(self.point2.x),
         y2 = math.floor(self.point2.y),
-        z = 0,
-        enabled = true,
-        categories = {},
+        z = self.isEditMode and self.editRegion.z or 0,
+        enabled = not self.isEditMode or self.editRegion.enabled ~= false,
+        categories = self.isEditMode and self.editRegion.categories or {},
         customProperties = props
     }
 
     if self.isEditMode then
         regionDef.originalId = self.editOriginalId or id
         sendClientCommand("RegionManager", "UpdateRegion", regionDef)
-        player:Say("Submitting region update: " .. name .. "...", 0.7, 0.7, 1, UIFont.Small, 2, "radio")
+        player:Say(getText("UI_RMMP_SayUpdating", name), 0.7, 0.7, 1, UIFont.Small, 2, "radio")
         print("[RegionManager MapPicker] Sent UpdateRegion command: " .. tostring(regionDef.originalId) .. " -> " .. id)
     else
         sendClientCommand("RegionManager", "AddRegion", regionDef)
@@ -942,7 +832,7 @@ function ISRegionMapPicker:onDelete()
     sendClientCommand("RegionManager", "DeleteRegion", {
         originalId = originalId
     })
-    player:Say("Deleting region: " .. tostring(originalId) .. "...", 1, 0.6, 0.2, UIFont.Small, 2, "radio")
+    player:Say(getText("UI_RMMP_SayDeleting", tostring(originalId)), 1, 0.6, 0.2, UIFont.Small, 2, "radio")
 end
 
 function ISRegionMapPicker:onBack()
@@ -982,8 +872,6 @@ function ISRegionMapPicker:new(x, y, width, height)
         a = 0.95
     }
     o.moveWithMouse = true
-    o.isPanningMap = false
-    o.panDragDist = 0
     o.isEditMode = false
     o.editRegion = nil
     o.editOriginalId = nil
@@ -1003,8 +891,8 @@ function RegionManager.MapPicker.Open()
         return
     end
 
-    local width = 900
-    local height = 950
+    local width = math.min(1280, getCore():getScreenWidth() - 40)
+    local height = math.min(850, getCore():getScreenHeight() - 40)
     local x = (getCore():getScreenWidth() - width) / 2
     local y = (getCore():getScreenHeight() - height) / 2
 
@@ -1035,8 +923,8 @@ function RegionManager.MapPicker.OpenForEdit(region)
         return
     end
 
-    local width = 900
-    local height = 950
+    local width = math.min(1280, getCore():getScreenWidth() - 40)
+    local height = math.min(850, getCore():getScreenHeight() - 40)
     local x = (getCore():getScreenWidth() - width) / 2
     local y = (getCore():getScreenHeight() - height) / 2
 

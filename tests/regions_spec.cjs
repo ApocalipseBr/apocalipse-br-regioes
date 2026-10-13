@@ -20,6 +20,8 @@ function files(dir) {
     });
 }
 
+require('./map_picker_spec.cjs')(mod, run);
+
 for (const file of files(mod)) {
     if (file.endsWith('.json')) JSON.parse(fs.readFileSync(file, 'utf8'));
     if (!file.endsWith('.lua')) continue;
@@ -34,7 +36,7 @@ for (const version of ['42.14', '42.18']) {
     const media = path.join(mod, version, 'media');
     const sandbox = fs.readFileSync(path.join(media, 'sandbox-options.txt'), 'utf8');
     const labels = JSON.parse(fs.readFileSync(path.join(media, 'lua/shared/Translate/EN/Sandbox.json'), 'utf8'));
-    for (const [name, value] of [['AutomaticSafeZones', 'false'], ['EnforcePVP', 'true']]) {
+    for (const [name, value] of [['AutomaticSafeZones', version === '42.18' ? 'true' : 'false'], ['EnforcePVP', 'true']]) {
         const block = sandbox.match(new RegExp(`option RegionManager\\.${name}\\s*\\{([^}]+)\\}`));
         assert.ok(block, name);
         assert.match(block[1], /type = boolean,/);
@@ -51,7 +53,9 @@ for (const version of ['42.14', '42.18']) {
         end
         loadModule()
         local configured = {{id='pvp', enabled=true, categories={'PVP'}, x1=10,y1=10,x2=20,y2=20}}
-        assert(#RegionManager.AutoSafeZones.generateSafeZones(configured) == 0)
+        assert(${version === '42.18' ? '#RegionManager.AutoSafeZones.generateSafeZones(configured) > 0' : '#RegionManager.AutoSafeZones.generateSafeZones(configured) == 0'})
+        SandboxVars = { RegionManager = {} }
+        assert(${version === '42.18' ? '#RegionManager.AutoSafeZones.generateSafeZones(configured) > 0' : '#RegionManager.AutoSafeZones.generateSafeZones(configured) == 0'})
         SandboxVars = { RegionManager = { AutomaticSafeZones = false } }
         local merged = RegionManager.AutoSafeZones.mergeWithConfigured(configured)
         assert(#merged == 1 and merged[1] == configured[1])
@@ -85,8 +89,8 @@ for (const version of ['42.14', '42.18']) {
         local function loadAuto() ${auto} end
         loadAuto()
         RegionManager.Config.Regions = {
-            {id='pvp',name='PvP',enabled=true,categories={'PVP'},x1=10,y1=10,x2=20,y2=20,z=0,customProperties={navigationChance=42,normalVisionChance=20}},
-            {id='manual',name='Safe',enabled=true,categories={'SAFEZONE'},x1=40,y1=40,x2=45,y2=45,z=0},
+            {id='pvp',name='PvP',enabled=true,categories={'PVP'},x1=10,y1=10,x2=20,y2=20,z=0,customProperties={navigationChance=42,normalVisionChance=20,message='Welcome',announceEntry=false,announceExit=true}},
+            {id='manual',name='Safe',enabled=true,categories={'SAFEZONE'},x1=40,y1=40,x2=45,y2=45,z=0,customProperties={message='   ',announceEntry=true,announceExit=true}},
             {id='neutral',name='Zombies',enabled=true,categories={'SPRINTERS'},x1=60,y1=60,x2=65,y2=65,z=0}
         }
         require = function(name)
@@ -140,6 +144,10 @@ for (const version of ['42.14', '42.18']) {
             if zone.id=='pvp' then assert(zone.pvpEnabled==true) end
             if zone.id=='pvp' and RegionManager.ZombieTraits then
                 assert(zone.zombieTraits.navigationChance==42 and zone.zombieTraits.normalVisionChance==20)
+                assert(zone.message=='Welcome' and zone.announceEntry and not zone.announceExit)
+            end
+            if zone.id=='manual' and RegionManager.ZombieTraits then
+                assert(zone.message=='' and not zone.announceEntry and not zone.announceExit)
             end
         end
     `, `${version} server registration and coverage cleanup`);
