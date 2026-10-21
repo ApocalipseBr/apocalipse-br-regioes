@@ -34,6 +34,7 @@
 ---@field name string
 ---@field color ColorRGB
 ---@field pvpEnabled boolean
+---@field forcedPvP boolean Defaults to true in PvP regions; false leaves player safety optional.
 ---@field safehouse boolean
 ---@field noZombies boolean
 ---@field announceEntry boolean
@@ -42,6 +43,10 @@
 ---@field zombieStrength number
 ---@field zombieDensity number
 ---@field zombieRespawn boolean
+---@field zombiePopulationTarget number Explicit living-zombie target on region.z; enables population additions.
+---@field zombiePopulationMaxDensity number Maximum zombies per 100 region tiles; clamps the target.
+---@field zombiePopulationBudget number Persisted lifetime addition allowance for this region ID.
+---@field zombiePopulationInterval number Minimum real seconds between additions in this region.
 ---@field lootModifier number
 ---@field sprinterChance number 1-100 percentage of zombies that become sprinters
 ---@field maxHits number Number of extra hits tough zombies can resist before dying (default 2, range 1-99)
@@ -62,6 +67,7 @@
 ---@field bounds Bounds
 ---@field color ColorRGB
 ---@field pvpEnabled boolean
+---@field forcedPvP boolean Per-region safety enforcement; missing means true for PvP.
 ---@field sprinterChance number
 ---@field announceEntry boolean
 ---@field announceExit boolean
@@ -279,6 +285,35 @@ RegionManager.Config.Regions = { -- Example: Muldraugh Downtown PVP
 
 -- External regions file (read/written by server on startup, managed by external API)
 RegionManager.Config.RegionsFilePath = "RegionManager_Regions.txt"
+
+-- Population work budgets are GLOBAL per tick: one region advances one step.
+-- Existing zombieDensity is intentionally not reinterpreted as a new density unit.
+-- Regions opt in through zombiePopulationTarget; no configured regions are altered.
+RegionManager.Config.Population = {
+    Enabled = true,
+    DefaultMaxDensity = 1, -- Zombies per 100 tiles, on the region's z level.
+    MaxDensity = 10,
+    MaxTarget = 500,
+    MaxLifetimeBudget = 5000,
+    ChunkProbesPerStep = 8,
+    ZombiesPerStep = 64,
+    PlayersPerStep = 4,
+    ZonesPerStep = 4,
+    PathNodesPerStep = 8,
+    PathProbesPerStep = 32, -- Additional neighbor square reads; shared by the selected job.
+    MaxPathNodes = 1024,
+    PlacementAttempts = 16,
+    ActivationDistance = 96,
+    MinPlayerDistance = 12,
+    SettleMs = 3000,
+    CoverageMaxAgeMs = 5000,
+    PlayerSafetyMaxAgeMs = 500,
+    SearchMaxAgeMs = 10000,
+    CycleMaxAgeMs = 30000,
+    RetryMs = 5000,
+    IntervalSeconds = 30,
+    SpawnSpacingMs = 1000
+}
 
 -- Export/Import paths (relative to Zomboid directory)
 RegionManager.Config.ExportPath = "RegionManager_Export.txt"

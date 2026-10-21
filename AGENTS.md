@@ -46,10 +46,11 @@ existing game mod ID is `ApocalipseBR_Regioes`. Preserve both identifiers.
   exit, and periodic callbacks, and owns region notifications. Entries precede
   exits and zone iteration uses unordered tables: enforcement must derive its
   decision from all current zones, not the last event received.
-- `RegionManager_PVP.lua` registers a client tick module. With enforcement on,
-  it requests safety off in PvP regions, bypassing cooldown when no toggle is
-  pending. Explicit safe regions take precedence. With enforcement off or no
-  PvP region present it leaves vanilla safety state/timers untouched. Native
+- `RegionManager_PVP.lua` registers a client tick module. Latest 42.18 uses each
+  PvP region's `forcedPvP` property: missing/true requests safety off, bypassing
+  cooldown when no toggle is pending; false leaves player safety optional. This
+  supersedes the legacy global EnforcePVP toggle in either state. Explicit safe
+  regions take precedence; any forced region wins over optional PvP overlaps. Native
   safe-zone damage protection remains independent of this client convenience.
   `RegionManager_PVP_Server.lua` is a legacy command handler; the 42.18 broadcast
   implementation is commented out. Do not assume it provides authoritative
@@ -90,9 +91,10 @@ New region options use the `RegionManager` namespace and page:
   42.14). Covers the fixed map bounds
   outside enabled PvP regions. Manual safe zones work independently. Restart
   the server after changing coverage to rebuild registered zones.
-- `EnforcePVP`: boolean, default **true**. False disables the mod's automatic
-  safety toggles and cooldown bypass, leaving vanilla player-controlled safety
-  and the configured `SafetyToggleTimer`/`SafetyCooldownTimer` in charge.
+- `EnforcePVP`: legacy boolean, default **true**. Historical 42.14 uses it as a
+  global switch; latest 42.18 uses region `forcedPvP` instead, regardless of this
+  option. See `docs/forced-pvp.md`. Boundary payloads include `forcedPvP` and a
+  resolved scalar `properties` bag for presentation/scoring addons.
 
 Build 42 sandbox labels use `lua/shared/Translate/EN/Sandbox.json` and
 `Sandbox_RegionManager_<Option>` / `_tooltip` keys. Existing language folders

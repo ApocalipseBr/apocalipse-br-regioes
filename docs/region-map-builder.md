@@ -41,3 +41,11 @@ category message. Entry/exit callbacks for gameplay modules still run.
 scroll bounds, property round trips, and edit payloads with Lua API stubs. Run the
 repository test/build/package checks. Actual map appearance, font scaling,
 tooltips, and multiplayer interaction still require a B42.18 in-game check.
+
+## Per-region PvP enforcement
+
+The latest form also includes a forced-PvP selector: inherit the category/default,
+explicitly force safety off, or leave PvP optional. It saves `forcedPvP` in
+`customProperties`, including explicit false. Missing defaults to true for PvP
+regions. This supersedes the old global enforcement sandbox toggle. See
+[per-region policy](forced-pvp.md).

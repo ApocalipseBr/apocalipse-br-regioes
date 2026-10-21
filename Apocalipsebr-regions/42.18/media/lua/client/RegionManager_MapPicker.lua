@@ -33,6 +33,13 @@ local function toInt(value)
     return math.floor(value)
 end
 
+local populationFields = {
+    {key="zombiePopulationTarget", label="PopulationTarget", min=0, max=500, integer=true},
+    {key="zombiePopulationMaxDensity", label="PopulationDensity", min=0, max=10},
+    {key="zombiePopulationBudget", label="PopulationBudget", min=0, max=5000, integer=true},
+    {key="zombiePopulationInterval", label="PopulationInterval", min=1, max=86400}
+}
+
 -- ============================================================================
 -- Main Map Picker Panel
 -- ============================================================================
@@ -310,6 +317,36 @@ function ISRegionMapPicker:createChildren()
     self.pvpMode:addOption(T("PVPEnabled"))
     self.formPanel:addChild(self.pvpMode)
     rowY = rowY + fieldHgt + 8
+    addLabel(T("LblForcedPVP"))
+    addLabel(T("ForcedPVPOnlyEnabled"))
+    self.forcedPvpMode = ISComboBox:new(formPad, rowY, entryW, fieldHgt)
+    self.forcedPvpMode:initialise()
+    self.forcedPvpMode:instantiate()
+    self.forcedPvpMode:addOption(T("ForcedPVPInherit"))
+    self.forcedPvpMode:addOption(T("ForcedPVPYes"))
+    self.forcedPvpMode:addOption(T("ForcedPVPNo"))
+    self.forcedPvpMode.selected = 3 -- New regions opt out; editing below preserves nil.
+    self.forcedPvpMode.tooltip = T("ForcedPVPHint")
+    self.formPanel:addChild(self.forcedPvpMode)
+    rowY = rowY + fieldHgt + 8
+    addSection(T("SecPopulation"))
+    self.populationEntries = {}
+    for _, field in ipairs(populationFields) do
+        addLabel(T(field.label))
+        local entry = addTextEntry("")
+        entry.tooltip = T(field.label .. "Hint")
+        self.populationEntries[field.key] = entry
+    end
+    addLabel(T("PopulationRespawn"))
+    self.populationRespawnMode = ISComboBox:new(formPad, rowY, entryW, fieldHgt)
+    self.populationRespawnMode:initialise()
+    self.populationRespawnMode:instantiate()
+    self.populationRespawnMode:addOption(T("PopulationRespawnInherit"))
+    self.populationRespawnMode:addOption(T("PopulationRespawnYes"))
+    self.populationRespawnMode:addOption(T("PopulationRespawnNo"))
+    self.populationRespawnMode.tooltip = T("PopulationRespawnHint")
+    self.formPanel:addChild(self.populationRespawnMode)
+    rowY = rowY + fieldHgt + 8
     self.chanceEntries = {}
     local function chance(key, label, optional)
         local entry = addNumericField(T(label))
@@ -445,6 +482,7 @@ function ISRegionMapPicker:createChildren()
 
         local props = r.customProperties or {}
         self.pvpMode.selected = props.pvpEnabled == true and 3 or (props.pvpEnabled == false and 2 or 1)
+        self.forcedPvpMode.selected = props.forcedPvP == true and 2 or (props.forcedPvP == false and 3 or 1)
 
         local function setNum(entry, value)
             if entry then
@@ -453,6 +491,8 @@ function ISRegionMapPicker:createChildren()
         end
 
         for key, entry in pairs(self.chanceEntries) do setNum(entry, props[key]) end
+        for key, entry in pairs(self.populationEntries) do setNum(entry, props[key]) end
+        self.populationRespawnMode.selected = props.zombieRespawn == true and 2 or (props.zombieRespawn == false and 3 or 1)
         setNum(self.maxHitsEntry, props.maxHits)
         self.messageEntry:setText(props.message or "")
     end
@@ -730,6 +770,20 @@ function ISRegionMapPicker:getPropertiesFromForm(baseProps)
     props.pvpEnabled = nil
     if self.pvpMode.selected == 2 then props.pvpEnabled = false end
     if self.pvpMode.selected == 3 then props.pvpEnabled = true end
+    if self.forcedPvpMode then
+        props.forcedPvP = nil
+        if self.forcedPvpMode.selected == 2 then props.forcedPvP = true end
+        if self.forcedPvpMode.selected == 3 then props.forcedPvP = false end
+        if not self.isEditMode and props.forcedPvP == nil then props.forcedPvP = false end
+    end
+    for key, entry in pairs(self.populationEntries or {}) do
+        props[key] = tonumber(entry:getText()) -- Blank removes only this override.
+    end
+    if self.populationRespawnMode then
+        props.zombieRespawn = nil
+        if self.populationRespawnMode.selected == 2 then props.zombieRespawn = true end
+        if self.populationRespawnMode.selected == 3 then props.zombieRespawn = false end
+    end
     for key, entry in pairs(self.chanceEntries or {}) do
         local value = tonumber(entry:getText())
         props[key] = value and math.max(0, math.min(100, value)) or nil
@@ -768,6 +822,16 @@ function ISRegionMapPicker:onSubmit()
         return
     end
 
+    for _, field in ipairs(populationFields) do
+        local entry = self.populationEntries and self.populationEntries[field.key]
+        local text = entry and entry:getText() or ""
+        local value = tonumber(text)
+        if text:match("%S") and (not value or value ~= value or value < field.min or value > field.max
+            or (field.integer and value ~= math.floor(value))) then
+            player:Say(T("InvalidPopulation"), 1, 0.3, 0.3, UIFont.Small, 2, "radio")
+            return
+        end
+    end
     for _, entry in pairs(self.chanceEntries or {}) do
         local text = entry:getText()
         local value = tonumber(text)
@@ -810,11 +874,11 @@ function ISRegionMapPicker:onSubmit()
         regionDef.originalId = self.editOriginalId or id
         sendClientCommand("RegionManager", "UpdateRegion", regionDef)
         player:Say(getText("UI_RMMP_SayUpdating", name), 0.7, 0.7, 1, UIFont.Small, 2, "radio")
-        print("[RegionManager MapPicker] Sent UpdateRegion command: " .. tostring(regionDef.originalId) .. " -> " .. id)
+        RegionManager.Log("MapPicker", "Sent UpdateRegion: " .. tostring(regionDef.originalId) .. " -> " .. id)
     else
         sendClientCommand("RegionManager", "AddRegion", regionDef)
         player:Say(string.format(T("SaySubmitting"), name), 0.7, 0.7, 1, UIFont.Small, 2, "radio")
-        print("[RegionManager MapPicker] Sent AddRegion command: " .. id)
+        RegionManager.Log("MapPicker", "Sent AddRegion: " .. id .. ", forcedPvP=" .. tostring(props.forcedPvP))
     end
 end
 
@@ -905,7 +969,7 @@ function RegionManager.MapPicker.Open()
     panel:addToUIManager()
     panel:setVisible(true)
 
-    print("[RegionManager MapPicker] Panel opened by: " .. player:getUsername())
+    RegionManager.Log("MapPicker", "Panel opened by: " .. player:getUsername())
 end
 
 ---@param region RegionDefinition
@@ -937,10 +1001,10 @@ function RegionManager.MapPicker.OpenForEdit(region)
     panel:addToUIManager()
     panel:setVisible(true)
 
-    print("[RegionManager MapPicker] Edit panel opened by: " .. player:getUsername() .. " for region " ..
+    RegionManager.Log("MapPicker", "Edit panel opened by: " .. player:getUsername() .. " for region " ..
               tostring(region.id))
 end
 
-print("[RegionManager MapPicker] Map picker module loaded")
+RegionManager.Log("MapPicker", "Map picker module loaded")
 
 return RegionManager.MapPicker

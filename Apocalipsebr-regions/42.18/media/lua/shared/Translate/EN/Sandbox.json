@@ -35,8 +35,8 @@
     "Sandbox_Apocalipse_TSY_NearAsWorldSound": "Close scream as 3D world sound",
     "Sandbox_Apocalipse_TSY_NearAsWorldSound_tooltip": "If enabled, the close scream uses PlayWorldSound just like the distant one - full 3D sound with spatial direction and echo, perfect for headsets. If disabled, it uses the zombie’s local audio, sharper and more direct.",
     "Sandbox_RegionManager": "RegionManager",
-    "Sandbox_RegionManager_DebugMode": "Enable debug logs",
-    "Sandbox_RegionManager_DebugMode_tooltip": "Turns RegionManager debug logging on/off.",
+    "Sandbox_RegionManager_DebugMode": "Debug logs",
+    "Sandbox_RegionManager_DebugMode_tooltip": "Enables RegionManager diagnostic logs, including population registration, activation, pauses and additions, map form submissions, and forced PvP policy changes and safety requests. Disabled by default. Server population logs and client PvP logs appear in their respective consoles.",
     "Sandbox_RegionManager_DecisionCacheTtlEpochs": "Decision cache TTL (epochs)",
     "Sandbox_RegionManager_DecisionCacheTtlEpochs_tooltip": "How long a persistentID decision stays in client memory before expiry. Higher values reduce server roundtrips; lower values clear stale entries faster.",
     "Sandbox_RegionManager_DecisionCacheSweepEveryEpochs": "Decision sweep interval (epochs)",
@@ -53,6 +53,6 @@
     "Sandbox_RegionManager_PendingConfirmSweepEveryEpochs_tooltip": "How often pending-confirmation cleanup runs on the client.",
     "Sandbox_RegionManager_AutomaticSafeZones": "Cover the map with automatic non-PvP zones",
     "Sandbox_RegionManager_AutomaticSafeZones_tooltip": "When enabled, covers the mod's configured map bounds with non-PvP zones, excluding enabled PvP regions. Enabled by default. Manually configured safe zones remain active. Restart the server after changing this option.",
-    "Sandbox_RegionManager_EnforcePVP": "Enforce PvP inside PvP zones",
-    "Sandbox_RegionManager_EnforcePVP_tooltip": "When enabled, forces players to disable safety inside PvP zones and bypasses the safety cooldown. When disabled, players control safety using the vanilla toggle timer and cooldown. Native non-PvP zone protection remains active."
+    "Sandbox_RegionManager_EnforcePVP": "Legacy global PvP enforcement (superseded)",
+    "Sandbox_RegionManager_EnforcePVP_tooltip": "Superseded by each region's forcedPvP property. PvP regions force safety off unless forcedPvP=false, regardless of this legacy option. Optional PvP leaves vanilla safety controls untouched. Native non-PvP zone protection remains active."
 }

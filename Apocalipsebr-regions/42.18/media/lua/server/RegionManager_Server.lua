@@ -51,6 +51,13 @@ local function buildZoneBoundariesPayload()
         for _, key in ipairs(RegionManager.ZombieTraits.Keys) do
             zombieTraits[key] = data.properties[key]
         end
+        -- Public resolved scalar settings let presentation addons describe and
+        -- score server-side category defaults without guessing client defaults.
+        local properties = {}
+        for key, value in pairs(data.properties) do
+            local kind = type(value)
+            if kind == "boolean" or kind == "number" or kind == "string" then properties[key] = value end
+        end
         table.insert(zoneList, {
             id = data.region.id,
             name = data.region.name,
@@ -61,6 +68,8 @@ local function buildZoneBoundariesPayload()
                 b = 0
             },
             pvpEnabled = data.properties.pvpEnabled,
+            forcedPvP = data.properties.forcedPvP,
+            properties = properties,
             zombieTraits = zombieTraits,
             sprinterChance = data.properties.sprinterChance or 0,
             shamblerChance = data.properties.shamblerChance or 0,
@@ -121,6 +130,8 @@ local function getMergedProperties(region)
         end
     end
 
+    -- Missing per-region policy means forced PvP for PvP-enabled regions.
+    if props.pvpEnabled == true and props.forcedPvP == nil then props.forcedPvP = true end
     return props
 end
 
@@ -141,6 +152,12 @@ local function registerRegion(region)
 
     -- Get merged properties
     local props = getMergedProperties(region)
+    if props.pvpEnabled == true or props.zombiePopulationTarget ~= nil then
+        log("Region '" .. region.id .. "' policy: pvpEnabled=" .. tostring(props.pvpEnabled)
+            .. ", forcedPvP=" .. tostring(props.forcedPvP)
+            .. ", populationTarget=" .. tostring(props.zombiePopulationTarget)
+            .. ", maxDensity=" .. tostring(props.zombiePopulationMaxDensity))
+    end
 
     -- Pre-calculate rectangle bounds from two opposite corners
     -- This ensures min/max are correctly ordered
@@ -636,6 +653,11 @@ local function addHotRegion(player, args)
         customProperties = args.customProperties or {}
     }
 
+    -- Only new definitions default to optional PvP. Do not migrate old raw nils.
+    if newRegion.customProperties.forcedPvP == nil then newRegion.customProperties.forcedPvP = false end
+    log("New region '" .. id .. "': forcedPvP=" .. tostring(newRegion.customProperties.forcedPvP)
+        .. ", populationTarget=" .. tostring(newRegion.customProperties.zombiePopulationTarget)
+        .. ", maxDensity=" .. tostring(newRegion.customProperties.zombiePopulationMaxDensity))
     -- Append and save to file
     table.insert(currentRegions, newRegion)
     local writeOk = writeRegionsFile(currentRegions)

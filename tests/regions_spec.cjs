@@ -21,6 +21,7 @@ function files(dir) {
 }
 
 require('./map_picker_spec.cjs')(mod, run);
+require('./population_spec.cjs')(mod, run);
 
 for (const file of files(mod)) {
     if (file.endsWith('.json')) JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -93,8 +94,11 @@ for (const version of ['42.14', '42.18']) {
             {id='manual',name='Safe',enabled=true,categories={'SAFEZONE'},x1=40,y1=40,x2=45,y2=45,z=0,customProperties={message='   ',announceEntry=true,announceExit=true}},
             {id='neutral',name='Zombies',enabled=true,categories={'SPRINTERS'},x1=60,y1=60,x2=65,y2=65,z=0}
         }
+        local encodedRegions, encodedWrites = nil, {}
         require = function(name)
-            if name=='RegionManager_JSON' then return {encode=function() return '{}' end} end
+            if name=='RegionManager_JSON' then return {encode=function(value)
+                encodedRegions=value; encodedWrites[#encodedWrites+1]=value; return '{}'
+            end} end
         end
         local function loadTraits() ${traits} end
         loadTraits()
@@ -143,12 +147,38 @@ for (const version of ['42.14', '42.18']) {
             if zone.id=='manual' then assert(zone.pvpEnabled==false) end
             if zone.id=='pvp' then assert(zone.pvpEnabled==true) end
             if zone.id=='pvp' and RegionManager.ZombieTraits then
+                assert(zone.forcedPvP==true and zone.properties.forcedPvP==true)
                 assert(zone.zombieTraits.navigationChance==42 and zone.zombieTraits.normalVisionChance==20)
                 assert(zone.message=='Welcome' and zone.announceEntry and not zone.announceExit)
             end
             if zone.id=='manual' and RegionManager.ZombieTraits then
                 assert(zone.message=='' and not zone.announceEntry and not zone.announceExit)
             end
+        end
+        if RegionManager.ZombieTraits then
+            RegionManager.Config.Regions[1].customProperties.forcedPvP=false
+            RegionManager.Config.Regions[1].customProperties.toughnessChance=70
+            loadZones()
+            clientCommand('RegionManager','RequestAllBoundaries',{getUsername=function() return 'test' end},{})
+            for _,zone in ipairs(payload.zones) do
+                if zone.id=='pvp' then
+                    assert(zone.forcedPvP==false and zone.properties.forcedPvP==false)
+                    assert(zone.properties.toughnessChance==70)
+                end
+            end
+            RegionManager.Config.Regions[1].customProperties.forcedPvP=nil
+            getOnlinePlayers=function() return {size=function() return 0 end} end
+            clientCommand('RegionManager','AddRegion',{
+                getUsername=function() return 'admin' end,getAccessLevel=function() return 'Admin' end
+            },{id='new_optional',name='New',x1=100,y1=100,x2=110,y2=110,customProperties={pvpEnabled=true}})
+            local found
+            for _,written in ipairs(encodedWrites) do
+                for _,region in ipairs(written.regions or {}) do
+                    if region.id=='new_optional' then found=region end
+                    if region.id=='pvp' then assert(region.customProperties.forcedPvP==nil,'old raw nil migrated') end
+                end
+            end
+            assert(found and found.customProperties.forcedPvP==false,'new server definitions must default false')
         end
     `, `${version} server registration and coverage cleanup`);
 
@@ -172,10 +202,16 @@ for (const version of ['42.14', '42.18']) {
         }
         local player = { getSafety=function() return safety end }
         local zones = { pvp = {pvpEnabled=true} }
+        local regionOverrides = ${version === '42.18'}
         SandboxVars = { RegionManager = { EnforcePVP=false } }
         module.onTick(player,zones)
         module.onTick(player,{})
-        assert(calls==0 and cooldown==45 and enabled)
+        if regionOverrides then
+            assert(calls==2 and cooldown==0 and not enabled)
+        else
+            assert(calls==0 and cooldown==45 and enabled)
+        end
+        enabled=true; cooldown=45; calls=0
         SandboxVars.RegionManager.EnforcePVP=true
         module.onTick(player,zones)
         assert(calls==2 and cooldown==0 and not enabled)
@@ -196,7 +232,23 @@ for (const version of ['42.14', '42.18']) {
         enabled=true; calls=0
         SandboxVars={RegionManager={EnforcePVP=false}}
         module.onTick(player,zones)
-        assert(calls==0) -- Runtime disabling leaves no cached enforcement behind.
+        assert(calls==(regionOverrides and 2 or 0))
+        if regionOverrides then
+            for _, global in ipairs({false,true}) do
+                SandboxVars.RegionManager.EnforcePVP=global
+                enabled=true; cooldown=45; calls=0
+                module.onTick(player,{pvp={pvpEnabled=true,forcedPvP=false}})
+                assert(calls==0 and cooldown==45 and enabled)
+                module.onTick(player,{pvp={pvpEnabled=true,forcedPvP=true}})
+                assert(calls==2 and not enabled)
+            end
+            enabled=true; calls=0
+            module.onTick(player,{optional={pvpEnabled=true,forcedPvP=false},forced={pvpEnabled=true}})
+            assert(calls==2 and not enabled)
+            enabled=true; calls=0
+            module.onTick(player,{optional={pvpEnabled=true,forcedPvP=false},forced={pvpEnabled=true},safe={pvpEnabled=false}})
+            assert(calls==0 and enabled)
+        end
     `, `${version} PvP enforcement`);
 }
 

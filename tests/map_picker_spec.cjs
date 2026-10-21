@@ -6,7 +6,7 @@ module.exports = function testMapPicker(mod, run) {
     run(`
         isClient=function() return true end
         require=function() end
-        RegionManager={}
+        RegionManager={Log=function() end}
         UIFont={Small=1,Medium=2}
         getTextManager=function() return {getFontHeight=function() return 14 end} end
         getText=function(key) return key end
@@ -17,8 +17,9 @@ module.exports = function testMapPicker(mod, run) {
             return {getText=function() return text end,setText=function(_,value) text=value end}
         end
         local picker=setmetatable({
+            isEditMode=true,
             nameEntry=entry('Renamed region'),idEntry=entry('stable_id'),messageEntry=entry('Welcome'),
-            maxHitsEntry=entry('7'),pvpMode={selected=1},
+            maxHitsEntry=entry('7'),pvpMode={selected=1},forcedPvpMode={selected=1},
             chanceEntries={navigationChance=entry(''),normalVisionChance=entry('0'),hawkVisionChance=entry('75')},
             statusLabel={setName=function() end},coordLabel={setName=function() end}
         },{__index=ISRegionMapPicker})
@@ -36,6 +37,29 @@ module.exports = function testMapPicker(mod, run) {
         assert(picker:getPropertiesFromForm().pvpEnabled==false)
         picker.pvpMode.selected=3
         assert(picker:getPropertiesFromForm().pvpEnabled==true)
+        assert(picker:getPropertiesFromForm({forcedPvP=false}).forcedPvP==nil)
+        picker.forcedPvpMode.selected=3
+        assert(picker:getPropertiesFromForm().forcedPvP==false)
+        picker.forcedPvpMode.selected=2
+        assert(picker:getPropertiesFromForm().forcedPvP==true)
+        picker.isEditMode=false; picker.forcedPvpMode.selected=1
+        assert(picker:getPropertiesFromForm().forcedPvP==false,'new regions default to optional PvP')
+        picker.isEditMode=true
+        assert(picker:getPropertiesFromForm().forcedPvP==nil,'legacy nil must survive edit')
+        picker.populationEntries={zombiePopulationTarget=entry('60'),zombiePopulationMaxDensity=entry('0.5'),
+            zombiePopulationBudget=entry('120'),zombiePopulationInterval=entry('10')}
+        picker.populationRespawnMode={selected=3}
+        props=picker:getPropertiesFromForm({zombieRespawn=true,custom='keep'})
+        assert(props.zombiePopulationTarget==60 and props.zombiePopulationMaxDensity==0.5)
+        assert(props.zombiePopulationBudget==120 and props.zombiePopulationInterval==10)
+        assert(props.zombieRespawn==false and props.custom=='keep')
+        picker.populationRespawnMode.selected=2
+        assert(picker:getPropertiesFromForm().zombieRespawn==true)
+        picker.populationRespawnMode.selected=1
+        picker.populationEntries.zombiePopulationTarget:setText('')
+        props=picker:getPropertiesFromForm({zombiePopulationTarget=100,zombieRespawn=true})
+        assert(props.zombiePopulationTarget==nil and props.zombieRespawn==nil)
+        picker.populationEntries.zombiePopulationTarget:setText('60')
 
         local mouseX,mouseY=0,0
         local centerX,centerY=100,200
@@ -90,6 +114,21 @@ module.exports = function testMapPicker(mod, run) {
         picker:onSubmit()
         assert(sent.command=='UpdateRegion' and sent.args.id=='stable_id' and sent.args.originalId=='stable_id')
         assert(sent.args.z==2 and sent.args.enabled==false and sent.args.categories[1]=='PVP' and sent.args.customProperties.custom=='keep')
+        assert(sent.args.customProperties.zombiePopulationTarget==60 and sent.args.customProperties.forcedPvP==nil)
+        for key,badValues in pairs({zombiePopulationTarget={'501','1.5','nan','-1'},
+            zombiePopulationMaxDensity={'11','-1'},zombiePopulationBudget={'5001','0.5'},
+            zombiePopulationInterval={'0','86401','inf'}}) do
+            local old=picker.populationEntries[key]:getText()
+            for _,bad in ipairs(badValues) do
+                sent=nil; picker.populationEntries[key]:setText(bad); picker:onSubmit()
+                assert(sent==nil,'invalid population value accepted: '..key..'='..bad)
+            end
+            picker.populationEntries[key]:setText(old)
+        end
+        picker.isEditMode=false; picker.forcedPvpMode.selected=3
+        picker:onSubmit()
+        assert(sent.command=='AddRegion' and sent.args.customProperties.forcedPvP==false)
+        picker.isEditMode=true
         sent=nil
         picker.chanceEntries.navigationChance=entry('101')
         picker:onSubmit()
@@ -162,4 +201,38 @@ module.exports = function testMapPicker(mod, run) {
         x=5; onTick()
         assert(#messages==2 and entries==7 and exits==6)
     `, '42.18 entry-only region messages');
+
+    const config = fs.readFileSync(path.join(mod, '42.18/media/lua/shared/RegionManager_Config.lua'), 'utf8');
+    const pvp = fs.readFileSync(path.join(mod, '42.18/media/lua/client/RegionManager_PVP.lua'), 'utf8');
+    run(`
+        isServer=function() return false end
+        require=function() end
+        local output={}
+        print=function(message) output[#output+1]=message end
+        local function loadConfig() ${config} end
+        loadConfig()
+        RegionManager.Log('test','hidden')
+        SandboxVars={RegionManager={DebugMode=false}}
+        RegionManager.Log('test','hidden')
+        assert(#output==0)
+        local module
+        RegionManager.ClientTick={registerModule=function(value) module=value end}
+        Events={OnGameStart={Add=function(fn) fn() end}}
+        local function loadPvp() ${pvp} end
+        loadPvp()
+        local toggles=0
+        local safety={isEnabled=function() return true end,getToggle=function() return 0 end,
+            setCooldown=function() end,toggleSafety=function() toggles=toggles+1 end}
+        local player={getSafety=function() return safety end}
+        module.onTick(player,{{pvpEnabled=true,forcedPvP=false}})
+        assert(#output==0)
+        SandboxVars.RegionManager.DebugMode=true
+        module.onTick(player,{{pvpEnabled=true}})
+        assert(#output==2 and toggles==1,'policy transition and request should log when enabled')
+        module.onTick(player,{{pvpEnabled=true}})
+        assert(#output==2,'unchanged policy must not flood logs')
+        SandboxVars.RegionManager.DebugMode=false
+        module.onTick(player,{{pvpEnabled=false}})
+        assert(#output==2,'turning debug off must silence logs immediately')
+    `, '42.18 sandbox debug gating and PvP transition logging');
 };

@@ -7,6 +7,12 @@
 
 Custom region management for Project Zomboid multiplayer servers. Divides the game map into rectangular zones with independent PVP rules, zombie property overrides (speed, vision, hearing, toughness, memory, navigation, armor), and a sprinter scream system (originally by SIMBAproduz / "theySEE YOU").
 
+Latest-version regional zombie population additions are documented in
+[Zombie population control](docs/zombie-population.md): explicit count targets
+clamped by a density ceiling, incremental server coverage/counting/walking
+checks, and persisted spawn budgets. Regions opt in with
+`zombiePopulationTarget` in `customProperties`.
+
 ---
 
 ## Table of Contents
@@ -219,9 +225,9 @@ On player spawn (`OnCreatePlayer`), zone state is cleared and boundaries are re-
 
 **File:** `RegionManager_PVP.lua` (client).
 
-`RegionManager.EnforcePVP` defaults to **true**, retaining automatic PvP enforcement. The client tick handler checks all current regions and requests vanilla safety off inside PvP regions, clearing the safety cooldown when no toggle is pending. Explicit safe regions take precedence over overlapping PvP regions; neutral regions do not impose a safety state. Leaving all PvP regions releases enforcement.
+Latest implementation (`42.18` folder): each PvP region uses `customProperties.forcedPvP`. Missing or `true` forces vanilla safety off, clearing the cooldown when no toggle is pending. `false` makes PvP optional and leaves player safety/timers untouched. This per-region rule supersedes the legacy `RegionManager.EnforcePVP` sandbox setting, regardless of its value. The map builder provides an inherit/forced/optional selector. Category defaults can also define this property.
 
-With `EnforcePVP=false`, the mod does not toggle safety or reset its timers. Players control their own safety through vanilla `SafetyToggleTimer` and `SafetyCooldownTimer` settings, including when entering or leaving PvP regions.
+Explicit safe regions still take precedence over overlapping PvP regions. Any forced PvP region imposes enforcement even when an optional PvP region overlaps it; neutral regions do not impose a safety state. Leaving all forced regions releases enforcement without automatically turning safety back on. Historical `42.14` retains the previous global `EnforcePVP` behavior. See [per-region policy](docs/forced-pvp.md).
 
 ### 5.2 Native Safe-Zone Protection
 
@@ -584,7 +590,7 @@ Region controls under page `RegionManager`:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `AutomaticSafeZones` | boolean | false | Cover fixed map bounds outside PvP regions with automatic non-PvP zones; requires server restart |
-| `EnforcePVP` | boolean | true | Automatically request safety off in PvP regions; false preserves vanilla player toggles and timers |
+| `EnforcePVP` | boolean | true | Legacy global toggle; latest implementation uses each region's `forcedPvP` property instead |
 
 Sprinter scream options under page `Apocalipse_TSY`:
 
