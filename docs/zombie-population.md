@@ -71,18 +71,46 @@ replaces the registered table and cancels all old queued work. Jobs use server
 players, server chunk lookups and server zombie objects; no client can enable
 spawning by claiming a region is loaded.
 
-A cycle selects a living nearby player within two floors, checks all overlapping
-chunks in batches, waits three real seconds, checks coverage again, and counts
-real zombies in batches. It then samples random coordinates in the region and
-performs a bounded directed reachability search from a candidate to the player. Before adding
-one zombie it rechecks the entire chunk footprint, revalidates the chosen
-walking path in batches, recounts zombies, and checks player distances.
+Initial activation selects a living nearby player within two floors, checks all
+overlapping chunks in batches and waits three real seconds. An incremental scan
+then walks the region's chunk footprint, checks chunks are loaded and visits
+only in-bounds squares on the configured floor. Living `IsoZombie` objects from
+`IsoGridSquare:getMovingObjects()` enter a region-owned reference set: a dense
+array plus a reference-to-entry lookup. Repeated observations of the same object
+do not increase the count. Initial scanning visits the entire region, including
+when the target is already exceeded; spawning waits until that scan completes.
+The global zombie list is never accessed.
 
-The player anchor is revalidated on every scheduled step. Leaving the area,
-disconnecting, death, missing chunks, stale coverage or an expired cycle stops
-the work. Another player can become the anchor on a later cycle. Returning to
-a region preserves the spent allowance; it does not create a fresh encounter.
-There is no fast-forward catch-up of waves after time spent away.
+Once initialized, bookkeeping continues independently of spawn attempts,
+intervals, target completion and lifetime allowance. Maintenance alternates with
+placement work, rotating through rolling chunk coverage checks, stale-reference
+pruning and a slower rolling tile scan. Tile scans keep their cursor across
+spawns and loop continuously; a new spawn does not start a new regional census.
+Each tile's initial object-list length limits its scan, so arrivals cannot extend
+it indefinitely. Local or unrelated list changes do not abort bookkeeping.
+
+Spawning reads the current dense-array length before placement and again
+immediately before the engine spawn call. Successful additions enter that set
+immediately. Removal swaps the last entry into the removed slot, updating the
+lookup in constant time. `OnZombieDead` queues bounded removals from all tracked
+overlapping regions; repeated death callbacks are deduplicated. Background
+pruning also removes dead zombies if the callback was missed, zombies leaving
+the bounds/floor, detached objects and changed online-ID/outfit incarnations.
+Pruning checks the current square against the live cell without calling
+`getMovingObjectIndex()`, which performs a linear square-list search in Java.
+
+A missing chunk detected by the watcher, tile scanner or final spawn-location
+check clears the entire regional reference set, cancels placement and requires
+initialization again. Detection is incremental, not instantaneous: its delay
+depends on region size and the number of scheduled regions. Clearing a set is
+constant-time; the reverse death-membership index uses weak zombie and region
+keys so discarded sets are not retained. Reference sets are runtime-only and
+are also discarded on region reload, module disable or server restart.
+
+The player anchor is revalidated during initial scanning and placement. Anchor
+departure cancels that work and clears its references. Another player can become
+the anchor on a later attempt. Returning preserves the spent spawn allowance;
+there is no fast-forward catch-up of waves after time spent away.
 
 Coverage checks use `getCell():getChunkForGridSquare`, which delegates to
 `ServerMap.getChunk` on the dedicated server. A region is never inferred to
@@ -115,7 +143,7 @@ or old zombie-list contents.
   ID as owner of a spawn location. Counts still include all zombies in each
   region. This avoids duplicate additions at shared coordinates.
 
-Reachability search is limited to 1024 admitted nodes and ten seconds, with at most
+Reachability search is limited to 1024 admitted nodes, with at most
 16 coordinate attempts per cycle. Failure to prove reachability defers spawning.
 Movement of the selected player to another tile restarts candidate search rather
 than reprioritizing an entire heap. Larger detours may still exceed the bounded
@@ -134,8 +162,22 @@ rebuilds formerly-water terrain, explicitly call the server-side
 
 ## Work budgets and freshness
 
-Global settings live in `RegionManager.Config.Population`. A scheduled step
-does at most eight chunk probes, 64 zombie-list reads, four player reads, four
+Global settings live in `RegionManager.Config.Population`. The initial scan
+visits at most `CensusSquaresPerStep=32` squares and reads at most
+`CensusObjectsPerStep=64` moving objects per scheduled step, also bounded by
+`ChunkProbesPerStep=8`. A resumed crowded square uses another square visit;
+non-zombie objects consume the same object budget. Missing squares inside a
+loaded chunk contribute zero. Water squares use the existing negative cache.
+After initialization, `MaintenanceSquaresPerStep=4` and
+`MaintenanceObjectsPerStep=16` throttle tile scanning. Other maintenance turns
+probe at most eight chunks or prune at most `MembersPerStep=8` references.
+Only one region advances per tick. After initialization its selected turns
+alternate between maintenance and placement, and maintenance rotates its three
+tasks, so a tile-scan turn normally occurs every six selected region turns.
+In addition, `DeathMembershipsPerTick=8` bounds queued death processing globally;
+the event callback itself only queues a cursor. A backlog can delay removal,
+and the reference count can temporarily overstate the living population.
+Other phases do at most eight chunk probes, four player reads, four
 region exclusion checks, or eight path-node expansions/validations, depending
 on its phase. Search performs at most 32 neighbor-square probes plus eight active
 node-square reads per step (`PathProbesPerStep` and `PathNodesPerStep`). A partial
@@ -150,16 +192,21 @@ At most one zombie is requested per successful cycle. There is a global
 one-second spacing between spawn requests, in addition to the region interval.
 Successful result-list sizes are charged to the persisted allowance.
 
-Coverage passes must finish within five seconds; the age of their first probe
-determines expiry. A cycle has a 30-second limit. Player-safety scans have a
-500ms age limit and restart if the player-list size changes. Many active regions
-or players can therefore cause deferral rather than an increased per-tick
-budget. For very large regions, smaller independently configured regions are
-more useful than increasing these limits without measurement.
+Coverage, scanning, search and placement have no elapsed-time expiry. Work can
+span as many ticks as needed under the fixed operation budgets. The three-second
+initial settling delay, retry delay, region addition interval and global spawn
+spacing remain pacing controls. Search restarts when its player anchor changes
+tile, and player-safety scanning restarts when the player-list size changes.
+Chunk watching continues during placement; there is no full-region coverage
+pass or recount required for every addition. The candidate chunk, square,
+walking route and player distances still receive placement checks.
 
-These are recent multi-tick observations, not atomic snapshots. The real-zombie
-list can move while a census runs; changes to its size abort the census, but
-same-size membership changes are not an exact native population census. A
+These are approximate multi-tick observations, not atomic snapshots. Reference
+membership prevents double counting a moving object, but arrivals can be missed
+until a later pass and departed/dead objects can remain until bounded cleanup.
+Local list shrinkage may skip entries until a subsequent scan. Memory grows
+with the number of unique regional members; the count is not capped at the
+target. Large regions take longer to refresh without increasing per-tick work. A
 region that becomes over target through vanilla population materialization,
 immigration or other mods is left alone and receives no further additions.
 No loaded surplus or unloaded native records are deleted. Consequently the
@@ -181,28 +228,42 @@ Server-side diagnostics:
 ```lua
 local status = RegionManager.Population.GetStatus("population_example")
 -- phase, reason, target, issued, budget, observed, cachedWaterTiles,
--- searchNodes, expandedNodes; nil for an unmanaged region.
+-- searchNodes, expandedNodes, censusTiles, censusElapsedMs, ready,
+-- maintenancePhase (1=coverage, 2=prune, 3=tiles); nil for an unmanaged region.
+-- observed is the current reference-array length, not a partial-pass count.
 ```
 
 Enable **Debug logs** in the RegionManager sandbox page (`DebugMode`, default
-false) for registration, full-coverage activation, pause reasons and successful
-additions through the existing `RegionManager.Log` logging path. Repeated pause
-reasons are suppressed until the reason changes. Population logs are server-side;
+false) for registration, initial scan start/completion, rolling scan progress, pause reasons and
+successful additions through the existing `RegionManager.Log` logging path.
+Progress is logged at most once every five seconds within a regional scan pass,
+including tracked/target, finished tiles and elapsed milliseconds. Repeated pause
+reasons are suppressed until the reason changes or initialization restarts.
+Population logs are server-side;
 map-form and PvP diagnostics are client-side.
-Player departure and cycle timeout have distinct reasons; timeouts name the
-phase that expired (for example, `cycle expired during search`).
-The state machine retains bounded coordinate/path tables, not zombie objects.
+Missing coverage reports `missing chunk`; a changed final walking anchor reports
+`walking anchor expired`. There are no scan/coverage timeout pause reasons.
+The scanner retains no square or object-list references. The runtime member
+array deliberately retains zombie references until removal or invalidation;
+scalar diagnostics never expose those objects.
 
 ## Validation
 
 `tests/population_spec.cjs` exercises partial/full coverage, reactivation,
-departure during work, density/count limits, final recount, final coverage,
+departure during work, density/count limits, rolling coverage,
 budgets across module reload, one-shot encounters, overlaps, water, occupancy,
 missing floors, vehicles, collision, safehouses, other players, and per-tick work
 limits. It also exercises pathable door/window/fence edges, north/west stair
 ascents and descents, distant-player search at ten ticks/second, partial neighbor
 expansion, live geometry revalidation and persistent floor-specific water
-exclusions. It runs through `npm test` and package validation.
+exclusions. Local-census cases cover crowded tiles with one-object/one-square
+budgets, non-zombie objects, unrelated zombie-list churn, large incremental
+scans, progress/completion logs and clipped chunk boundaries. Reference-set
+cases verify duplicate observations, movement ahead of the scanner, above-target
+counts, death callbacks and missed callbacks, bounded death removal across 12
+overlapping regions, departures, detached/reused objects, maintenance throttling,
+set reuse across additions and unload/disable cleanup. The global zombie
+list stub throws if accessed. It runs through `npm test` and package validation.
 
 These game-API stubs cannot verify actual Kahlua overload dispatch, native
 collision geometry, chunk-streaming timing, multiplayer replication or frame

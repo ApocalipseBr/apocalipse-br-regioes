@@ -12,10 +12,10 @@ module.exports = function(mod, run) {
         require=function() end
         local function loadConfig() ${config} end
         loadConfig()
-        RegionManager.Log=function() end
+        local logs={}
+        RegionManager.Log=function(_,message) logs[#logs+1]=message end
         local C=RegionManager.Config.Population
         C.SettleMs=20; C.RetryMs=20; C.IntervalSeconds=1; C.SpawnSpacingMs=0
-        C.CoverageMaxAgeMs=10000; C.CycleMaxAgeMs=30000
         local clock, loaded, missing, water, wall, safehouse, occupied = 0,true,false,false,false,false,false
         local clockStep=10
         local stairs, nofloor, vehicle, collision = false,false,false,false
@@ -23,6 +23,8 @@ module.exports = function(mod, run) {
         local worldSquares, waterReads, squareReads, pathChecks = nil, {}, {}, 0
         local probes, reads, zombieReads, playerReads, spawned = 0,0,0,0,0
         local zombies, players, state = {}, {}, {}
+        local squareCache, defaultTile = {}, {}
+        instanceof=function(object,name) return name=='IsoZombie' and object.zombie==true end
         local function list(t, kind)
             return {size=function() return #t end,get=function(_,i)
                 if kind=='zombie' then zombieReads=zombieReads+1 end
@@ -35,8 +37,19 @@ module.exports = function(mod, run) {
             local tile=worldSquares and worldSquares[coordinate]
             if not loaded or (worldSquares and not tile)
                 or (not worldSquares and (z~=0 or y~=1 or x<0 or x>31)) then return nil end
-            tile=tile or {}
-            return {
+            tile=tile or defaultTile
+            local cached=squareCache[coordinate]
+            if cached and cached.tile==tile then return cached end
+            local result={
+                tile=tile,
+                getMovingObjects=function()
+                    local localObjects={}
+                    for _,object in ipairs(zombies) do
+                        if not object.detached and math.floor(object:getX())==x and math.floor(object:getY())==y
+                            and math.floor(object:getZ())==z then localObjects[#localObjects+1]=object end
+                    end
+                    return list(localObjects,'zombie')
+                end,
                 isWaterSquare=function()
                     waterReads[coordinate]=(waterReads[coordinate] or 0)+1
                     return tile.water or (water and x==14)
@@ -66,6 +79,8 @@ module.exports = function(mod, run) {
                 getX=function() return x end,getY=function() return y end,getZ=function() return z end,
                 x=x,y=y,z=z
             }
+            squareCache[coordinate]=result
+            return result
         end
         local cell={
             getChunkForGridSquare=function(_,x,y,z)
@@ -78,7 +93,7 @@ module.exports = function(mod, run) {
                 squareReads[coordinate]=(squareReads[coordinate] or 0)+1
                 return square(x,y,z)
             end,
-            getZombieList=function() return list(zombies,'zombie') end
+            getZombieList=function() error('population must never scan the global zombie list') end
         }
         local function player(id,x,y,z)
             local p={id=id,x=x,y=y,z=z,dead=false}
@@ -103,8 +118,24 @@ module.exports = function(mod, run) {
             if b==32 then randomCoordinate=randomCoordinate+1; return randomCoordinate%2==1 and 14 or 1 end
             return a
         end
+        local zombieId=0
         local function zombie(x,y,z)
-            return {getX=function() return x end,getY=function() return y end,getZ=function() return z end,isDead=function() return false end}
+            zombieId=zombieId+1
+            local object={zombie=true,x=x,y=y,z=z,id=zombieId,outfit=zombieId,dead=false}
+            function object:getX() return self.x end
+            function object:getY() return self.y end
+            function object:getZ() return self.z end
+            function object:getOnlineID() return self.id end
+            function object:getPersistentOutfitID() return self.outfit end
+            function object:isDead() return self.dead end
+            function object:getCurrentSquare()
+                if self.detached then return nil end
+                for _,live in ipairs(zombies) do
+                    if live==self then return square(math.floor(self.x),math.floor(self.y),math.floor(self.z)) end
+                end
+                return nil
+            end
+            return object
         end
         addZombiesInOutfit=function(x,y,z,count)
             assert(count==1 and z==0 and x==14 and y==1)
@@ -118,8 +149,8 @@ module.exports = function(mod, run) {
         RegionManager.Server={registeredZones={test=zone('test',{
             zombiePopulationTarget=3,zombiePopulationMaxDensity=0.2,zombiePopulationBudget=4,zombieRespawn=true
         })}}
-        local tick
-        Events={OnTick={Add=function(fn) tick=fn end}}
+        local tick,deathHandler
+        Events={OnTick={Add=function(fn) tick=fn end},OnZombieDead={Add=function(fn) deathHandler=fn end}}
         local function loadModule() ${source} end
         loadModule()
         local function ticks(n)
@@ -128,13 +159,171 @@ module.exports = function(mod, run) {
                 clock=clock+clockStep
                 tick()
                 assert(probes<=C.ChunkProbesPerStep+1,'unbounded chunk work')
-                assert(zombieReads<=C.ZombiesPerStep,'unbounded census')
+                assert(zombieReads<=math.max(C.CensusObjectsPerStep,C.MaintenanceObjectsPerStep,1),'unbounded census')
                 assert(playerReads<=C.PlayersPerStep,'unbounded player scan')
-                assert(reads<=math.max(C.PathNodesPerStep+C.PathProbesPerStep,C.PathNodesPerStep*2)+2,'unbounded square work')
+                assert(reads<=math.max(C.CensusSquaresPerStep,C.MaintenanceSquaresPerStep,C.MembersPerStep,C.PathNodesPerStep+C.PathProbesPerStep,C.PathNodesPerStep*2)+2,'unbounded square work')
                 assert(pathChecks<=2*math.max(C.PathProbesPerStep,C.PathNodesPerStep),'unbounded edge work')
             end
         end
     `;
+    run(fixture + `
+        local z=zombie(1,1,0)
+        zombies={z,z,zombie(2,1,0),zombie(3,1,0)}
+        RegionManager.Server.registeredZones.test.properties.zombiePopulationBudget=0
+        ticks(2500)
+        assert(RegionManager.Population.GetStatus('test').observed==3,
+            'set must count unique references, including population above target')
+        z.dead=true; deathHandler(z); deathHandler(z)
+        ticks(1)
+        assert(RegionManager.Population.GetStatus('test').observed==2,'duplicate death events must remove only one member')
+        zombies[3].dead=true; zombies[4].dead=true
+        deathHandler(zombies[3]); deathHandler(zombies[4]); ticks(2)
+        assert(RegionManager.Population.GetStatus('test').observed==0,'swap removals must keep membership indices correct')
+        assert(spawned==0)
+    `, 'population deduplicates references and removes deaths from the maintained set');
+
+    run(fixture + `
+        local z=zombie(1,1,0); zombies={z}
+        C.CensusSquaresPerStep=1
+        RegionManager.Server.registeredZones.test.properties.zombiePopulationBudget=0
+        local moved=false
+        for i=1,1500 do
+            ticks(1)
+            local status=RegionManager.Population.GetStatus('test')
+            if status.observed==1 and not moved then z.x=14; moved=true end
+            if status.ready then break end
+        end
+        assert(moved and RegionManager.Population.GetStatus('test').ready)
+        assert(RegionManager.Population.GetStatus('test').observed==1,'moving ahead of the scan must not count twice')
+    `, 'population deduplicates zombies moving between scan squares');
+
+    run(fixture + `
+        local z=zombie(1,1,0); zombies={z}
+        RegionManager.Server.registeredZones.test.properties.zombiePopulationBudget=0
+        ticks(200); assert(RegionManager.Population.GetStatus('test').observed==1)
+        z.x=100; ticks(60)
+        assert(RegionManager.Population.GetStatus('test').observed==0,'departures must be pruned')
+        z.x=1; ticks(2000)
+        assert(RegionManager.Population.GetStatus('test').observed==1,'rolling scan must discover returning zombies')
+        z.detached=true; z.id=z.id+100; z.outfit=z.outfit+100; ticks(60)
+        assert(RegionManager.Population.GetStatus('test').observed==0,'detached/recycled references must be removed')
+        z.detached=false; ticks(2000)
+        assert(RegionManager.Population.GetStatus('test').observed==1,'reused live object can be discovered again')
+        z.dead=true; ticks(60)
+        assert(RegionManager.Population.GetStatus('test').observed==0,'pruning handles missing death callbacks')
+    `, 'population prunes departures, detached incarnations and missed deaths');
+
+    run(fixture + `
+        zombies={zombie(1,1,0)}
+        RegionManager.Server.registeredZones.test.properties.zombiePopulationBudget=0
+        ticks(200)
+        for i=1,200 do
+            ticks(1)
+            assert(reads<=math.max(C.MaintenanceSquaresPerStep,C.MembersPerStep),'maintenance must use slower square budget')
+            assert(zombieReads<=C.MaintenanceObjectsPerStep,'maintenance must use slower object budget')
+        end
+        loaded=false; ticks(100)
+        local status=RegionManager.Population.GetStatus('test')
+        assert(not status.ready and status.observed==0,'unloading must discard the reference set')
+        loaded=true; ticks(200)
+        status=RegionManager.Population.GetStatus('test')
+        assert(status.ready and status.observed==1,'reloading must initialize a fresh set')
+        C.Enabled=false; ticks(1)
+        assert(RegionManager.Population.GetStatus('test')==nil,'disable must release runtime ledgers')
+    `, 'population throttles maintenance and clears ledgers on unload or disable');
+
+    run(fixture + `
+        C.DeathMembershipsPerTick=0; C.MembersPerStep=0
+        local z=zombie(1,1,0); zombies={z}
+        RegionManager.Server.registeredZones.test.properties.zombiePopulationBudget=0
+        ticks(200)
+        z.dead=true; deathHandler(z)
+        z.dead=false; z.id=z.id+100; z.outfit=z.outfit+100
+        ticks(2000)
+        C.DeathMembershipsPerTick=8; ticks(2)
+        assert(RegionManager.Population.GetStatus('test').observed==1,
+            'delayed death from an old incarnation must not remove a newly observed one')
+    `, 'population distinguishes reincarnations in delayed death processing');
+
+    run(fixture + `
+        C.DeathMembershipsPerTick=1; C.MembersPerStep=0
+        local z=zombie(1,1,0); zombies={z}
+        RegionManager.Server.registeredZones={}
+        for i=1,12 do
+            local id='overlap'..i
+            RegionManager.Server.registeredZones[id]=zone(id,{zombiePopulationTarget=1,zombiePopulationBudget=0})
+        end
+        ticks(2000)
+        for i=1,12 do assert(RegionManager.Population.GetStatus('overlap'..i).observed==1) end
+        z.dead=true; deathHandler(z); deathHandler(z); ticks(1)
+        local total=0
+        for i=1,12 do total=total+RegionManager.Population.GetStatus('overlap'..i).observed end
+        assert(total==11,'one death must process at most one overlapping membership per tick')
+        ticks(30)
+        for i=1,12 do assert(RegionManager.Population.GetStatus('overlap'..i).observed==0) end
+    `, 'population bounds death processing across overlapping regions');
+
+    run(fixture + `
+        C.CensusSquaresPerStep=1; C.CensusObjectsPerStep=1
+        C.MaintenanceSquaresPerStep=1; C.MaintenanceObjectsPerStep=1
+        RegionManager.Server.registeredZones.test.properties.zombieRespawn=false
+        for i=1,140 do
+            local object=zombie(1,1,0); object.zombie=false
+            zombies[#zombies+1]=object
+        end
+        zombies[#zombies+1]=zombie(1,1,0)
+        zombies[#zombies+1]=zombie(1,1,0)
+        ticks(2000)
+        assert(spawned==0,'crowded tile must resume until real zombies are counted')
+        assert(RegionManager.Population.GetStatus('test').observed==2)
+    `, 'population bounds crowded moving-object scans and ignores non-zombies');
+
+    run(fixture + `
+        C.CensusSquaresPerStep=1
+        local began=false
+        for i=1,1800 do
+            ticks(1)
+            local status=RegionManager.Population.GetStatus('test')
+            if status and status.phase=='census' then
+                began=true
+                -- Unrelated loaded-world activity changes list size every turn.
+                zombies[#zombies+1]=zombie(1000+i,1000,0)
+            end
+            if spawned>0 then break end
+        end
+        assert(began and spawned==1,'unrelated zombie churn must not abort local counting')
+        local progress,complete=false,false
+        for _,message in ipairs(logs) do
+            if string.find(message,'population scan progress',1,true) then progress=true end
+            if string.find(message,'initial population scan complete',1,true) then complete=true end
+        end
+        assert(progress and complete,'slow local counts need progress and completion diagnostics')
+    `, 'population tolerates unrelated zombie-list changes');
+
+    run(fixture + `
+        C.CensusSquaresPerStep=1; clockStep=100
+        local finished=false
+        for i=1,1500 do
+            ticks(1)
+            local status=RegionManager.Population.GetStatus('test')
+            assert(not status or status.reason~='cycle expired during census')
+            if status and status.phase=='exclusions' then finished=true; break end
+        end
+        assert(finished and clock>30000,'large census must make bounded progress without the placement deadline')
+    `, 'population allows a large incremental census to finish');
+
+    run(fixture + `
+        local zone=RegionManager.Server.registeredZones.test
+        zone.bounds={minX=5,maxX=10,minY=1,maxY=2}
+        zone.properties.zombiePopulationTarget=1
+        zone.properties.zombiePopulationMaxDensity=10
+        zone.properties.zombieRespawn=false
+        zombies={zombie(10,1,0),zombie(4,1,0),zombie(10,1,1)}
+        ticks(500)
+        assert(spawned==0 and RegionManager.Population.GetStatus('test').observed==1,
+            'clipped chunks must count inclusive edges on the configured floor')
+    `, 'population scans clipped regional chunk footprints');
+
     run(fixture + `
         -- Also accept an iterator-only pairs implementation, as used by Kahlua.
         local standardPairs=pairs
@@ -229,8 +418,8 @@ module.exports = function(mod, run) {
                 break
             end
         end
-        ticks(1000); assert(spawned==0,'final census must catch population arriving during search')
-    `, 'population recounts before adding');
+        ticks(2000); assert(spawned<=1,'rolling ledger must eventually observe arrivals')
+    `, 'population discovers arrivals through ongoing regional bookkeeping');
 
     run(fixture + `
         for i=1,500 do
@@ -238,14 +427,17 @@ module.exports = function(mod, run) {
             local status=RegionManager.Population.GetStatus('test')
             if status and status.phase=='search' then missing=true; break end
         end
-        ticks(1000); assert(spawned==0,'final coverage must catch an unloaded interior chunk')
-    `, 'population rechecks whole-region coverage before adding');
+        ticks(1000)
+        local status=RegionManager.Population.GetStatus('test')
+        assert(not status.ready and status.observed==0,'unload detection must clear the ledger')
+        local before=spawned; ticks(500); assert(spawned==before,'no additions after unload detection')
+    `, 'population watches regional coverage independently of spawning');
 
     run(fixture + `
-        C.CoverageMaxAgeMs=5
         C.ChunkProbesPerStep=1
-        ticks(1000); assert(spawned==0,'coverage exceeding its time budget must defer')
-    `, 'population rejects stale multi-tick coverage');
+        clockStep=1000
+        ticks(1000); assert(spawned>0,'slow bounded coverage must finish without a timeout')
+    `, 'population completes coverage without elapsed-time deadlines');
 
     for (const kind of ['door', 'window', 'fence']) {
         run(fixture + `
@@ -300,8 +492,8 @@ module.exports = function(mod, run) {
         worldSquares={}
         for x=0,31 do for y=0,31 do worldSquares[x..':'..y..':0']={} end end
         players[1].x=31; players[1].y=31
-        clockStep=100; C.SettleMs=3000; C.CoverageMaxAgeMs=5000
-        ticks(120)
+        clockStep=100; C.SettleMs=3000
+        ticks(240)
         assert(spawned>0,'directed search must reach a distant player at ten ticks/sec')
     `, 'population directed search avoids breadth-first flooding at real server cadence');
 
@@ -368,21 +560,20 @@ module.exports = function(mod, run) {
     `, 'population enforces the retained-node limit');
 
     run(fixture + `
-        C.CycleMaxAgeMs=50; C.SettleMs=1000
-        local sawTimeout=false
-        for i=1,500 do
-            ticks(1)
-            local status=RegionManager.Population.GetStatus('test')
-            if status and status.reason=='cycle expired during settling' then sawTimeout=true; break end
+        ticks(1000)
+        local initial=0
+        for _,message in ipairs(logs) do
+            if string.find(message,'initial population scan complete',1,true) then initial=initial+1 end
         end
-        assert(sawTimeout,'timeout must identify its phase separately from player departure')
-    `, 'population reports the expired phase');
+        assert(spawned==2 and initial==1,'successive additions must reuse the initialized set')
+        assert(RegionManager.Population.GetStatus('test').ready)
+    `, 'population reuses its set across spawn attempts');
 
     run(fixture + `
         for i=1,500 do
             ticks(1)
             local status=RegionManager.Population.GetStatus('test')
-            if status and status.phase=='finalCoverage' then collision=true; break end
+            if status and status.phase=='validatePath' then collision=true; break end
         end
         ticks(700)
         assert(spawned==0,'route must be rechecked after geometry changes')

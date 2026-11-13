@@ -11,7 +11,7 @@ require "RegionManager_Config"
 RegionManager.ClientTick = RegionManager.ClientTick or {}
 
 local TickCounter = 0
-local TickInterval = 80 -- 2 seconds at 60 FPS
+local TickInterval = 160 -- 2 seconds at 60 FPS
 
 -- Exponential backoff for RequestAllBoundaries while zone data is still
 -- missing. Without this, every ClientTick interval (and every pending-zombie
