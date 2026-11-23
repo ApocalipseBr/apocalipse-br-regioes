@@ -41,23 +41,15 @@ allowance must be whole numbers; invalid values prevent submission.
 | Property | Meaning/default |
 | --- | --- |
 | `zombiePopulationTarget` | Positive count enables this module for a region; absent means no population additions |
-| `zombiePopulationMaxDensity` | Zombies per 100 tiles, on `region.z`; default 1, permitted range 0–10 |
-| `zombiePopulationBudget` | Total successful additions allowed for the region ID across unloads and server restarts; defaults to the effective target, capped at 5000 |
+| `zombiePopulationMaxDensity` | Maximum living zombies per 10×10 block on `region.z`. Defaults to 1, accepts 0–10, rounds positive fractions up, and disables additions at 0 |
+| `zombiePopulationBudget` | Total successful additions allowed for the region ID across unloads and server restarts, capped at 5000. Defaults to the region target |
 | `zombiePopulationInterval` | Minimum real seconds between additions in that region; default 30, minimum 1 |
 | `zombieRespawn` | True permits repeated top-ups within the remaining budget; otherwise the encounter permanently stops once its target is observed or that many zombies have been added |
 
-The target is capped at 500 and at:
-
-```text
-floor((maxX - minX + 1) * (maxY - minY + 1) * maxDensity / 100)
-```
-
-The example covers 4096 tiles, so its effective target is **40**, despite a
-requested count of 60. Counts include living real zombies from all sources on
-that region's floor. The density ceiling is a region-wide average over the
-rectangle, including water/unusable tiles; it is not a local crowding radius
-or a density measurement of traversable terrain. Historical `zombieDensity`
-remains untouched because it never had an implemented unit/contract.
+The region target is capped at 500. The example has a target of **60** and
+permits at most one addition to any block while that block is empty. Blocks
+start at the region's minimum X and Y and are clipped at the far edges. Counts
+include living real zombies from all sources inside the region on that floor.
 
 No existing example region is automatically opted in. Setting
 `RegionManager.Config.Population.Enabled=false` disables this module globally.
@@ -77,9 +69,10 @@ then walks the region's chunk footprint, checks chunks are loaded and visits
 only in-bounds squares on the configured floor. Living `IsoZombie` objects from
 `IsoGridSquare:getMovingObjects()` enter a region-owned reference set: a dense
 array plus a reference-to-entry lookup. Repeated observations of the same object
-do not increase the count. Initial scanning visits the entire region, including
-when the target is already exceeded; spawning waits until that scan completes.
-The global zombie list is never accessed.
+do not increase the count. Placement can begin during the initial scan as long
+as the count observed so far is below the target. The initial scan keeps its
+cursor across placement attempts and player departures, and visits the entire
+region while its chunks remain loaded. The global zombie list is never accessed.
 
 Once initialized, bookkeeping continues independently of spawn attempts,
 intervals, target completion and lifetime allowance. Maintenance alternates with
@@ -107,10 +100,10 @@ constant-time; the reverse death-membership index uses weak zombie and region
 keys so discarded sets are not retained. Reference sets are runtime-only and
 are also discarded on region reload, module disable or server restart.
 
-The player anchor is revalidated during initial scanning and placement. Anchor
-departure cancels that work and clears its references. Another player can become
-the anchor on a later attempt. Returning preserves the spent spawn allowance;
-there is no fast-forward catch-up of waves after time spent away.
+The player anchor is revalidated during activation and placement. Departure
+cancels the active placement attempt, and another player can become the anchor
+on a later attempt. Returning preserves the spent spawn allowance and the
+normal addition interval.
 
 Coverage checks use `getCell():getChunkForGridSquare`, which delegates to
 `ServerMap.getChunk` on the dedicated server. A region is never inferred to
@@ -142,6 +135,9 @@ or old zombie-list contents.
 - Overlapping controlled regions choose the lexicographically smallest region
   ID as owner of a spawn location. Counts still include all zombies in each
   region. This avoids duplicate additions at shared coordinates.
+- Scan the candidate's 10×10 block directly before the final player-distance
+  check. A full block rejects the candidate even if the region census has not
+  reached it yet. If another region places a zombie during this check, repeat it.
 
 Reachability search is limited to 1024 admitted nodes, with at most
 16 coordinate attempts per cycle. Failure to prove reachability defers spawning.
@@ -162,12 +158,15 @@ rebuilds formerly-water terrain, explicitly call the server-side
 
 ## Work budgets and freshness
 
-Global settings live in `RegionManager.Config.Population`. The initial scan
-visits at most `CensusSquaresPerStep=32` squares and reads at most
+Global settings live in `RegionManager.Config.Population`. The initial scan and
+candidate block scan each visit at most `CensusSquaresPerStep=32` squares and
+read at most
 `CensusObjectsPerStep=64` moving objects per scheduled step, also bounded by
 `ChunkProbesPerStep=8`. A resumed crowded square uses another square visit;
 non-zombie objects consume the same object budget. Missing squares inside a
-loaded chunk contribute zero. Water squares use the existing negative cache.
+loaded chunk contribute zero. The regional census uses the existing negative
+water cache. Initial census and placement alternate when there is placement
+work to do, and the census can also use otherwise idle placement turns.
 After initialization, `MaintenanceSquaresPerStep=4` and
 `MaintenanceObjectsPerStep=16` throttle tile scanning. Other maintenance turns
 probe at most eight chunks or prune at most `MembersPerStep=8` references.
@@ -201,9 +200,11 @@ Chunk watching continues during placement; there is no full-region coverage
 pass or recount required for every addition. The candidate chunk, square,
 walking route and player distances still receive placement checks.
 
-These are approximate multi-tick observations, not atomic snapshots. Reference
-membership prevents double counting a moving object, but arrivals can be missed
-until a later pass and departed/dead objects can remain until bounded cleanup.
+These are approximate multi-tick observations. During the initial scan,
+zombies in unvisited blocks may push the true regional count above its target
+before the census catches up. Reference membership prevents double counting a
+moving object, but arrivals can be missed until a later pass and departed/dead
+objects can remain until bounded cleanup.
 Local list shrinkage may skip entries until a subsequent scan. Memory grows
 with the number of unique regional members; the count is not capped at the
 target. Large regions take longer to refresh without increasing per-tick work. A

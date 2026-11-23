@@ -88,13 +88,11 @@ local function policy(zone)
         if not finite(b[name]) or b[name] < 0 or b[name] ~= math.floor(b[name]) then return nil end
     end
     if b.maxX < b.minX or b.maxY < b.minY then return nil end
-    local area = (b.maxX - b.minX + 1) * (b.maxY - b.minY + 1)
-    -- Density is an upper bound in zombies per 100 tiles, on this region's floor.
     local density = number(p.zombiePopulationMaxDensity, C.DefaultMaxDensity, 0, C.MaxDensity)
-    local target = math.floor(math.min(p.zombiePopulationTarget, C.MaxTarget, area * density / 100))
-    if target <= 0 then return nil end
+    local target = math.floor(math.min(p.zombiePopulationTarget, C.MaxTarget))
+    if target <= 0 or density <= 0 then return nil end
     return {
-        target = target, z = z, bounds = b,
+        target = target, densityLimit = math.ceil(density), z = z, bounds = b,
         budget = math.floor(number(p.zombiePopulationBudget, target, 0, C.MaxLifetimeBudget)),
         respawn = p.zombieRespawn == true,
         interval = number(p.zombiePopulationInterval, C.IntervalSeconds, 1, 86400) * 1000
@@ -108,6 +106,7 @@ local function suspend(job, time, reason)
     end
     job.phase, job.nextAt, job.reason = "idle", time + C.RetryMs, reason
     job.search, job.path, job.validated, job.candidate = nil, nil, nil, nil
+    job.densityScan = nil
     job.playerId = nil
 end
 
@@ -128,7 +127,7 @@ end
 local function remember(job, zombie)
     if not zombie or not instanceof(zombie,"IsoZombie") or zombie:isDead()
         or math.floor(zombie:getZ()) ~= job.policy.z
-        or not contains(job.policy.bounds,zombie:getX(),zombie:getY()) then return end
+        or not contains(job.policy.bounds,math.floor(zombie:getX()),math.floor(zombie:getY())) then return end
     local entry = job.positions[zombie]
     if entry then
         entry.onlineId, entry.outfitId = zombie:getOnlineID(), zombie:getPersistentOutfitID()
@@ -279,10 +278,11 @@ end
 
 local function nextCandidate(job, time)
     job.search, job.path, job.validated = nil, nil, nil
+    job.densityScan = nil
     job.safetyStart, job.safetyCount = nil, nil
     job.attempts = (job.attempts or 0) + 1
     if job.attempts > C.PlacementAttempts then
-        suspend(job, time, "no reachable placement")
+        suspend(job, time, "no valid placement")
         return
     end
     local b = job.policy.bounds
@@ -365,7 +365,7 @@ local function validatePath(job, cell, time)
         job.path = node.parent
         if not job.path then
             job.search = nil
-            job.safetyIndex, job.phase = 0, "playerSafety"
+            job.phase = "density"
             return
         end
     end
@@ -377,7 +377,6 @@ local function startCensus(job, time)
     -- deduplicated members array retains live zombie references.
     job.census = {cx=job.cxMin,cy=job.cyMin,x=b.minX,y=b.minY,index=0,tiles=0,started=time,lastLog=time}
     if not job.ready then
-        job.phase = "census"
         job.lastLoggedReason = nil
         RegionManager.Log("Population", job.id .. ": starting initial population bookkeeping, target=" .. job.policy.target)
     end
@@ -399,7 +398,7 @@ local function census(job, cell, time)
             if not job.ready then
                 RegionManager.Log("Population", job.id .. ": initial population scan complete, tracked " .. #job.members
                     .. "/" .. job.policy.target .. ", tiles=" .. scan.tiles .. ", elapsedMs=" .. (time-scan.started))
-                job.ready, job.phase, job.nextAt = true, "idle", 0
+                job.ready = true
             end
             startCensus(job,time)
             return
@@ -467,7 +466,7 @@ local function maintain(job, cell, time)
             local valid = not zombie:isDead() and zombie:getOnlineID() == entry.onlineId
                 and zombie:getPersistentOutfitID() == entry.outfitId
                 and math.floor(zombie:getZ()) == job.policy.z
-                and contains(job.policy.bounds,zombie:getX(),zombie:getY())
+                and contains(job.policy.bounds,math.floor(zombie:getX()),math.floor(zombie:getY()))
             if valid then
                 local square = zombie:getCurrentSquare()
                 valid = square ~= nil and cell:getGridSquare(square:getX(),square:getY(),square:getZ()) == square
@@ -480,15 +479,56 @@ local function maintain(job, cell, time)
     end
 end
 
-local function spawn(job, cell, p, time)
-    if not job.ready then return end
-    if #job.members >= job.policy.target then
-        if not job.policy.respawn then saved.regions[job.id].completed = true end
-        suspend(job,time,"target met"); return
+local function checkDensity(job, cell, time)
+    local scan, b, c = job.densityScan, job.policy.bounds, job.candidate
+    local z = job.policy.z
+    -- Check the candidate block directly, including tiles the regional census
+    -- has yet to visit. Retry if another placement ran during the check.
+    if not scan or scan.lastSpawn ~= lastSpawn then
+        local minX = b.minX + math.floor((c.x-b.minX)/10)*10
+        local minY = b.minY + math.floor((c.y-b.minY)/10)*10
+        scan = {x=minX,y=minY,minX=minX,maxX=math.min(b.maxX,minX+9),maxY=math.min(b.maxY,minY+9),
+            index=0,count=0,seen={},lastSpawn=lastSpawn}
+        job.densityScan = scan
     end
+    local objects, probes, chunks = 0, 0, {}
+    for _ = 1, C.CensusSquaresPerStep do
+        local cx, cy = math.floor(scan.x/8)*8, math.floor(scan.y/8)*8
+        local chunk = key(cx,cy,z)
+        if not chunks[chunk] then
+            if probes >= C.ChunkProbesPerStep then return end
+            probes = probes + 1
+            if not cell:getChunkForGridSquare(cx,cy,z) then invalidate(job,time,"missing chunk"); return end
+            chunks[chunk] = true
+        end
+        local square = cell:getGridSquare(scan.x,scan.y,z)
+        local list = square and square:getMovingObjects()
+        if not scan.limit then scan.limit = list and list:size() or 0 end
+        while list and scan.index < math.min(scan.limit,list:size()) do
+            if objects >= C.CensusObjectsPerStep then return end
+            local zombie = list:get(scan.index)
+            scan.index, objects = scan.index+1, objects+1
+            if zombie and instanceof(zombie,"IsoZombie") and not zombie:isDead() and not scan.seen[zombie] then
+                remember(job,zombie)
+                scan.seen[zombie], scan.count = true, scan.count+1
+                if scan.count >= job.policy.densityLimit then nextCandidate(job,time); return end
+            end
+        end
+        scan.index, scan.limit = 0, nil
+        scan.x = scan.x+1
+        if scan.x > scan.maxX then scan.x, scan.y = scan.minX, scan.y+1 end
+        if scan.y > scan.maxY then
+            job.safetyStart, job.safetyIndex, job.phase = nil, 0, "playerSafety"
+            return
+        end
+    end
+end
+
+local function spawn(job, cell, p, time)
     if not job.validated[key(math.floor(p:getX()),math.floor(p:getY()),math.floor(p:getZ()))] then
         suspend(job,time,"walking anchor expired"); return
     end
+    if job.densityScan.lastSpawn ~= lastSpawn then job.phase = "density"; return end
     local c, z = job.candidate, job.policy.z
     local dx,dy = p:getX()-c.x,p:getY()-c.y
     if dx*dx+dy*dy < C.MinPlayerDistance*C.MinPlayerDistance then nextCandidate(job,time); return end
@@ -519,11 +559,17 @@ local function spawn(job, cell, p, time)
 end
 
 local function step(job, cell, time)
-    if time < job.nextAt then return end
+    -- A false return frees this turn for the initial census.
+    if time < job.nextAt then return false end
+    local data = saved.regions[job.id]
+    if job.census and #job.members >= job.policy.target then
+        if not job.policy.respawn then data.completed = true end
+        suspend(job,time,"target met")
+        return false
+    end
     if job.phase == "idle" then
-        local data = saved.regions[job.id]
-        if job.ready and (data.issued >= job.policy.budget or (not job.policy.respawn and data.completed)
-            or (data.nextAt or 0) > time) then return end
+        if job.census and (data.issued >= job.policy.budget or (not job.policy.respawn and data.completed)
+            or (data.nextAt or 0) > time) then return false end
         job.phase, job.playerIndex, job.playerId = "players", 0, nil
     end
     if job.phase == "players" then
@@ -531,11 +577,7 @@ local function step(job, cell, time)
         for _ = 1, C.PlayersPerStep do
             if job.playerIndex >= players:size() then
                 if job.playerId then
-                    if job.ready then
-                        if #job.members >= job.policy.target then
-                            if not job.policy.respawn then saved.regions[job.id].completed = true end
-                            suspend(job,time,"target met")
-                        else job.attempts = 0; nextCandidate(job,time) end
+                    if job.census then job.attempts = 0; nextCandidate(job,time)
                     else startCoverage(job,"coverage",time) end
                 else suspend(job,time,"no relevant player") end
                 return
@@ -550,12 +592,18 @@ local function step(job, cell, time)
         return
     end
     local p = playerFor(job)
-    if not p then invalidate(job,time,"player left"); return end
+    if not p then
+        if job.census then suspend(job,time,"player left")
+        else invalidate(job,time,"player left") end
+        return
+    end
     if job.phase == "coverage" then
         if coverage(job,cell,time) then job.phase, job.settleUntil = "settling", time + C.SettleMs end
     elseif job.phase == "settling" then
-        if time >= job.settleUntil then startCensus(job,time) end
-    elseif job.phase == "census" then census(job,cell,time)
+        if time >= job.settleUntil then
+            startCensus(job,time)
+            job.phase = "idle"
+        end
     elseif job.phase == "candidate" then nextCandidate(job,time)
     elseif job.phase == "exclusions" then
         for _ = 1, C.ZonesPerStep do
@@ -576,6 +624,8 @@ local function step(job, cell, time)
     elseif job.phase == "search" then search(job,cell,p,time)
     elseif job.phase == "validatePath" then
         validatePath(job,cell,time)
+    elseif job.phase == "density" then
+        checkDensity(job,cell,time)
     elseif job.phase == "playerSafety" then
         local players = getOnlinePlayers()
         if not job.safetyStart then job.safetyStart, job.safetyCount = time, players:size() end
@@ -638,11 +688,15 @@ function Population.Tick()
     local cell = getCell()
     if cell then
         local job, time = jobs[cursor], now()
-        if job.ready then
+        if job.census then
             job.monitorTurn = not job.monitorTurn
-            if job.monitorTurn then maintain(job,cell,time); return end
+            if job.monitorTurn then
+                if job.ready then maintain(job,cell,time)
+                else census(job,cell,time) end
+                return
+            end
         end
-        step(job,cell,time)
+        if step(job,cell,time) == false and job.census and not job.ready then census(job,cell,time) end
     end
 end
 

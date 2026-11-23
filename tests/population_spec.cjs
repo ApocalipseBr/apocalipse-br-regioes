@@ -147,7 +147,7 @@ module.exports = function(mod, run) {
             return {region={id=id,z=0},bounds={minX=0,minY=0,maxX=31,maxY=31},properties=props}
         end
         RegionManager.Server={registeredZones={test=zone('test',{
-            zombiePopulationTarget=3,zombiePopulationMaxDensity=0.2,zombiePopulationBudget=4,zombieRespawn=true
+            zombiePopulationTarget=2,zombiePopulationMaxDensity=2,zombiePopulationBudget=4,zombieRespawn=true
         })}}
         local tick,deathHandler
         Events={OnTick={Add=function(fn) tick=fn end},OnZombieDead={Add=function(fn) deathHandler=fn end}}
@@ -266,7 +266,7 @@ module.exports = function(mod, run) {
     run(fixture + `
         C.CensusSquaresPerStep=1; C.CensusObjectsPerStep=1
         C.MaintenanceSquaresPerStep=1; C.MaintenanceObjectsPerStep=1
-        RegionManager.Server.registeredZones.test.properties.zombieRespawn=false
+        RegionManager.Server.registeredZones.test.properties.zombiePopulationBudget=0
         for i=1,140 do
             local object=zombie(1,1,0); object.zombie=false
             zombies[#zombies+1]=object
@@ -274,8 +274,8 @@ module.exports = function(mod, run) {
         zombies[#zombies+1]=zombie(1,1,0)
         zombies[#zombies+1]=zombie(1,1,0)
         ticks(2000)
-        assert(spawned==0,'crowded tile must resume until real zombies are counted')
-        assert(RegionManager.Population.GetStatus('test').observed==2)
+        assert(RegionManager.Population.GetStatus('test').observed==2,
+            'crowded tile must resume until real zombies are counted')
     `, 'population bounds crowded moving-object scans and ignores non-zombies');
 
     run(fixture + `
@@ -284,14 +284,13 @@ module.exports = function(mod, run) {
         for i=1,1800 do
             ticks(1)
             local status=RegionManager.Population.GetStatus('test')
-            if status and status.phase=='census' then
+            if status and status.censusTiles and not status.ready then
                 began=true
                 -- Unrelated loaded-world activity changes list size every turn.
                 zombies[#zombies+1]=zombie(1000+i,1000,0)
             end
-            if spawned>0 then break end
         end
-        assert(began and spawned==1,'unrelated zombie churn must not abort local counting')
+        assert(began and spawned==2,'unrelated zombie churn must not abort local counting')
         local progress,complete=false,false
         for _,message in ipairs(logs) do
             if string.find(message,'population scan progress',1,true) then progress=true end
@@ -303,11 +302,11 @@ module.exports = function(mod, run) {
     run(fixture + `
         C.CensusSquaresPerStep=1; clockStep=100
         local finished=false
-        for i=1,1500 do
+        for i=1,3000 do
             ticks(1)
             local status=RegionManager.Population.GetStatus('test')
             assert(not status or status.reason~='cycle expired during census')
-            if status and status.phase=='exclusions' then finished=true; break end
+            if status and status.ready then finished=true; break end
         end
         assert(finished and clock>30000,'large census must make bounded progress without the placement deadline')
     `, 'population allows a large incremental census to finish');
@@ -318,7 +317,7 @@ module.exports = function(mod, run) {
         zone.properties.zombiePopulationTarget=1
         zone.properties.zombiePopulationMaxDensity=10
         zone.properties.zombieRespawn=false
-        zombies={zombie(10,1,0),zombie(4,1,0),zombie(10,1,1)}
+        zombies={zombie(10.5,1,0),zombie(4,1,0),zombie(10,1,1)}
         ticks(500)
         assert(spawned==0 and RegionManager.Population.GetStatus('test').observed==1,
             'clipped chunks must count inclusive edges on the configured floor')
@@ -341,7 +340,7 @@ module.exports = function(mod, run) {
 
     run(fixture + `
         ticks(1000)
-        assert(spawned==2,'density must clamp count target to floor(1024*0.2/100)')
+        assert(spawned==2,'configured region target should stop additions')
         assert(RegionManager.Population.GetStatus('test').target==2)
         assert(state.regions.test.issued==2)
         zombies={}; ticks(1000)
@@ -349,6 +348,38 @@ module.exports = function(mod, run) {
         zombies={}; loadModule(); ticks(1000)
         assert(spawned==4,'restart must preserve allowance')
     `, 'population density, bounded work, replenishment and persistence');
+
+    run(fixture + `
+        C.CensusSquaresPerStep=1
+        ticks(480)
+        local status=RegionManager.Population.GetStatus('test')
+        assert(spawned>0 and not status.ready and status.censusTiles>0,
+            'placement must succeed while the initial census is still scanning')
+        local before=status.censusTiles
+        players[1].x=1000
+        ticks(100)
+        assert(RegionManager.Population.GetStatus('test').censusTiles>before,
+            'the initial census must continue after the player leaves')
+    `, 'population spawns during the initial census');
+
+    run(fixture + `
+        local region=RegionManager.Server.registeredZones.test
+        worldSquares={}
+        for x=0,31 do worldSquares[x..':1:0']={} end
+        worldSquares['19:9:0']={}; worldSquares['19:10:0']={}; worldSquares['20:1:0']={}
+        region.properties.zombiePopulationTarget=4
+        region.properties.zombiePopulationMaxDensity=0.2
+        C.CensusSquaresPerStep=1
+        zombies={zombie(19,9,0),zombie(20,1,0),zombie(14,1,1)}
+        ticks(500)
+        assert(spawned==0,'a same-floor zombie in the candidate block must block the addition')
+        assert(not RegionManager.Population.GetStatus('test').ready)
+        zombies[1].y=10
+        ticks(500)
+        assert(spawned==1,'the next block and other floors must not consume local density')
+        assert(RegionManager.Population.GetStatus('test').target==4,
+            'local density must not scale down the configured region target')
+    `, 'population limits additions per 10-by-10 block before census completion');
 
     for (const [name, setup] of [
         ['unloaded interior chunk', 'missing=true'],
@@ -393,7 +424,8 @@ module.exports = function(mod, run) {
     `, 'population non-respawning encounters');
 
     run(fixture + `
-        RegionManager.Server.registeredZones.a=zone('a',{zombiePopulationTarget=2,zombiePopulationBudget=2})
+        RegionManager.Server.registeredZones.a=zone('a',{
+            zombiePopulationTarget=2,zombiePopulationMaxDensity=2,zombiePopulationBudget=2})
         ticks(1000)
         assert(spawned==2)
         assert(state.regions.test.issued==0,'overlap must have a single deterministic spawn owner')
@@ -521,7 +553,7 @@ module.exports = function(mod, run) {
         worldSquares={}
         for x=0,31 do worldSquares[x..':1:1']={} end
         RegionManager.Server.registeredZones={test=zone('test',{
-            zombiePopulationTarget=2,zombiePopulationBudget=2})}
+            zombiePopulationTarget=2,zombiePopulationMaxDensity=2,zombiePopulationBudget=2})}
         RegionManager.Server.registeredZones.test.region.z=1
         players[1].z=1; water=false
         addZombiesInOutfit=function(x,y,z,count)

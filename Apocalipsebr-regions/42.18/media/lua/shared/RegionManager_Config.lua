@@ -44,7 +44,7 @@
 ---@field zombieDensity number
 ---@field zombieRespawn boolean
 ---@field zombiePopulationTarget number Explicit living-zombie target on region.z; enables population additions.
----@field zombiePopulationMaxDensity number Maximum zombies per 100 region tiles; clamps the target.
+---@field zombiePopulationMaxDensity number Maximum zombies per 10x10 block on the region's floor; positive fractions round up.
 ---@field zombiePopulationBudget number Persisted lifetime addition allowance for this region ID.
 ---@field zombiePopulationInterval number Minimum real seconds between additions in this region.
 ---@field lootModifier number
@@ -291,7 +291,7 @@ RegionManager.Config.RegionsFilePath = "RegionManager_Regions.txt"
 -- Regions opt in through zombiePopulationTarget; no configured regions are altered.
 RegionManager.Config.Population = {
     Enabled = true,
-    DefaultMaxDensity = 1, -- Zombies per 100 tiles, on the region's z level.
+    DefaultMaxDensity = 1, -- Zombies per 10x10 block, on the region's z level.
     MaxDensity = 10,
     MaxTarget = 500,
     MaxLifetimeBudget = 5000,
